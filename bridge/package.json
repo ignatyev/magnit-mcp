@@ -1,6 +1,6 @@
 {
   "name": "magnit-http-mcp",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.13.0" },

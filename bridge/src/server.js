@@ -99,7 +99,7 @@ async function handleMcp(req,res){
   if(!params||typeof params!=="object"||Array.isArray(params))return writeJson(res,400,rpcError(id,-32602,"Invalid params"));
   if(body.method==="notifications/initialized")return res.writeHead(202,{"Cache-Control":"no-store"}).end();
   if(body.method==="server/discover")return writeJson(res,200,rpc(id,{supportedVersions:["2026-07-28"],capabilities:{tools:{}}}));
-  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.2"}}));
+  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.3"}}));
   if(body.method==="tools/list")return writeJson(res,200,rpc(id,{tools:TOOLS}));
   if(body.method==="ping")return writeJson(res,200,rpc(id,{}));
   if(body.method!=="tools/call")return writeJson(res,200,rpcError(id,-32601,"Method not found"));

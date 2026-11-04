@@ -1,5 +1,4 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import { MagnitApiError, validateStoreCode } from "./magnit-api.js";
@@ -10,7 +9,7 @@ const CART_URL = "https://magnit.ru/webgate/v1/carts/lite";
 const CART_PATH = "/webgate/v1/carts/lite";
 const MAX_DEBUG_JSON = 128_000;
 const HEADER_ALLOWLIST = new Set(["x-service", "x-store-code", "x-magnit-bff", "x-permissions-jwt"]);
-const SAFE_LOGIN_FAILURES = new Set(["setup_required", "adb_missing", "adb_command_failed", "adb_forward_failed", "chrome_debug_endpoint_unavailable", "chrome_target_create_failed", "chrome_target_invalid", "chrome_target_attach_failed", "chrome_tab_activate_failed", "cdp_connect_failed", "cdp_network_enable_failed", "login_unavailable"]);
+const SAFE_LOGIN_FAILURES = new Set(["setup_required", "adb_missing", "adb_command_failed", "adb_forward_failed", "chrome_debug_endpoint_unavailable", "chrome_target_create_failed", "chrome_target_invalid", "chrome_target_attach_failed", "chrome_tab_activate_failed", "cdp_connect_failed", "cdp_network_enable_failed", "chrome_tab_navigate_failed", "login_unavailable"]);
 
 function safeContext(headers) {
   const normalized = Object.create(null);
@@ -46,7 +45,6 @@ export function magnitCookieHeader(cookies) {
     if (typeof cookie.value !== "string" || /[\r\n\0;]/.test(cookie.value)) continue;
     const domain = String(cookie.domain || "").toLowerCase();
     if (domain !== "magnit.ru" && domain !== ".magnit.ru") continue;
-    if (cookie.secure !== true) continue;
     const path = typeof cookie.path === "string" && cookie.path.startsWith("/") ? cookie.path : "/";
     if (!CART_PATH.startsWith(path)) continue;
     if (Number.isFinite(cookie.expires) && cookie.expires > 0 && cookie.expires * 1000 <= Date.now()) continue;
@@ -111,7 +109,8 @@ function publicLoginFailure(cause, stage) {
   if (stage === "chrome_attach") return { code: "chrome_target_attach_failed", message: "Chrome создал вкладку, но не дал подключиться к ней. Обновите Chrome и попробуйте ещё раз." };
   if (stage === "chrome_activate") return { code: "chrome_tab_activate_failed", message: "Не удалось показать новую вкладку Chrome. Проверьте, что экран телефона включён и Chrome открыт." };
   if (stage === "cdp_connect") return { code: "cdp_connect_failed", message: "Не удалось подключить локальный DevTools к Chrome. Оставьте телефон разблокированным и попробуйте ещё раз." };
-  if (stage === "cdp_enable") return { code: "cdp_network_enable_failed", message: "Chrome не включил наблюдение за запросом корзины. Проверьте версию Chrome и повторите вход." };
+  if (stage === "cdp_enable") return { code: "cdp_network_enable_failed", message: "Chrome не включил наблюдение за входом и корзиной. Проверьте версию Chrome и повторите вход." };
+  if (stage === "chrome_navigate") return { code: "chrome_tab_navigate_failed", message: "Chrome не смог открыть сайт Магнит в новой вкладке. Проверьте соединение телефона и повторите вход." };
   return { code: "login_unavailable", message: "Не удалось открыть защищённую вкладку Магнит. Проверьте Termux, ADB и Chrome; подробности запроса не сохранялись." };
 }
 
@@ -202,7 +201,9 @@ export class AndroidMagnitLogin {
     this.state = { status: "idle", message: "Вход не запущен." };
     this.started = false;
     this.closed = false;
-    this.attempted = new Set();
+    this.authRequestIds = new Map();
+    this.cartVerificationStarted = false;
+    this.authenticated = false;
     this.verifying = false;
     this.context = null;
     this.cancelRequested = false;
@@ -248,7 +249,7 @@ export class AndroidMagnitLogin {
       this.cdp = await CdpClient.connect(version.webSocketDebuggerUrl, this.WebSocketImpl);
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       stage = "chrome_target";
-      const created = await this.cdp.send("Target.createTarget", { url: "https://magnit.ru/" });
+      const created = await this.cdp.send("Target.createTarget", { url: "about:blank" });
       stage = "chrome_target_validation";
       if (typeof created?.targetId !== "string" || !/^[A-Za-z0-9-]+$/.test(created.targetId)) throw new Error("debug_target_invalid");
       this.targetId = created.targetId;
@@ -260,9 +261,17 @@ export class AndroidMagnitLogin {
       stage = "chrome_activate";
       await this.cdp.send("Target.activateTarget", { targetId: this.targetId });
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
-      this.cdp.on("Network.requestWillBeSent", (params, sessionId) => { if (sessionId === this.sessionId) this.observeCartRequest(params); });
+      this.cdp.on("Network.requestWillBeSent", (params, sessionId) => { if (sessionId === this.sessionId) this.observeRequest(params); });
+      this.cdp.on("Network.responseReceived", (params, sessionId) => { if (sessionId === this.sessionId) this.observeResponse(params); });
+      this.cdp.on("Network.loadingFinished", (params, sessionId) => { if (sessionId === this.sessionId) void this.observeFinished(params); });
+      this.cdp.on("Network.loadingFailed", (params, sessionId) => { if (sessionId === this.sessionId) this.authRequestIds.delete(params.requestId); });
       stage = "cdp_enable";
       await this.cdp.send("Network.enable", {}, 10_000, this.sessionId);
+      await this.cdp.send("Page.enable", {}, 10_000, this.sessionId);
+      if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
+      stage = "chrome_navigate";
+      const navigation = await this.cdp.send("Page.navigate", { url: "https://magnit.ru/" }, 15_000, this.sessionId);
+      if (typeof navigation?.errorText === "string" && navigation.errorText) throw new Error("page_navigation_failed");
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       this.setState("waiting", "В открытой вкладке войдите в Магнит и откройте express-корзину. Код и пароль вводите только на сайте Магнит.");
       this.deadline = Date.now() + this.timeoutMs;
@@ -276,11 +285,48 @@ export class AndroidMagnitLogin {
     }
   }
 
-  observeCartRequest(params) {
+  observeRequest(params) {
     const request = params?.request;
+    const requestId = params?.requestId;
+    if (typeof requestId === "string") this.authRequestIds.delete(requestId);
     if (String(request?.method).toUpperCase() !== "GET") return;
     const context = extractCartRequestContext(request?.method, request?.url, request?.headers);
     if (context) this.context = context;
+    if (typeof params?.requestId === "string" && typeof request?.url === "string") {
+      try {
+        const url = new URL(request.url);
+        if (url.origin === "https://magnit.ru" && url.pathname === "/_auth/session" && !url.username && !url.password && !url.search && !url.hash) {
+          if (this.authRequestIds.size >= 16) this.authRequestIds.delete(this.authRequestIds.keys().next().value);
+          this.authRequestIds.set(requestId, false);
+        }
+      } catch {}
+    }
+  }
+
+  observeResponse(params) {
+    const response = params?.response;
+    if (typeof params?.requestId !== "string" || !this.authRequestIds.has(params.requestId)) return;
+    if (response?.status !== 200 || typeof response.url !== "string") { this.authRequestIds.delete(params.requestId); return; }
+    let url;
+    try { url = new URL(response.url); } catch { this.authRequestIds.delete(params.requestId); return; }
+    if (url.origin !== "https://magnit.ru" || url.username || url.password || url.pathname !== "/_auth/session" || url.search || url.hash) { this.authRequestIds.delete(params.requestId); return; }
+    this.authRequestIds.set(params.requestId, true);
+  }
+
+  async observeFinished(params) {
+    const requestId = params?.requestId;
+    if (typeof requestId !== "string") return;
+    const confirmed = this.authRequestIds.get(requestId) === true;
+    this.authRequestIds.delete(requestId);
+    if (!confirmed) return;
+    try {
+      const result = await this.cdp?.send("Network.getResponseBody", { requestId }, 10_000, this.sessionId);
+      if (this.closed || typeof result?.body !== "string" || result.body.length > 88_000) return;
+      const body = result.base64Encoded ? Buffer.from(result.body, "base64") : Buffer.from(result.body, "utf8");
+      if (body.length > 64_000) return;
+      const payload = JSON.parse(body.toString("utf8"));
+      this.authenticated = payload?.authorized === true;
+    } catch { /* Ignore body access/parse errors; do not retain response data. */ }
   }
 
   async pollCookies() {
@@ -290,25 +336,18 @@ export class AndroidMagnitLogin {
       await this.cleanup();
       return;
     }
+    if (!this.authenticated || !this.context) return;
     this.polling=true;
     try {
       const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] }, 10_000, this.sessionId);
       if (this.closed) return;
       const cookie = magnitCookieHeader(result?.cookies);
-      if (!cookie || !this.context || this.verifying) return;
-      const fingerprint = createHash("sha256").update(cookie).digest("hex");
-      if (this.attempted.has(fingerprint) || this.attempted.size >= 5) return;
-      this.attempted.add(fingerprint);
+      if (!cookie || !this.context || !this.authenticated || this.verifying || this.cartVerificationStarted) return;
+      this.cartVerificationStarted = true;
       this.verifying = true;
       this.setState("verifying", "Проверяем вход одним безопасным чтением корзины…");
       const session = { cookie, context: this.context };
       try {
-        const authorized = await isMagnitAuthenticated(session, this.fetchImpl);
-        if (this.closed) return;
-        if (!authorized) {
-          this.setState("waiting", "Сайт ещё не подтвердил вход. Завершите вход в открытой вкладке; этот Cookie повторно не проверялся.");
-          return;
-        }
         await viewMagnitCart({ session, storeCode: this.context.storeCode, mode: "express", fetchImpl: this.fetchImpl });
         if (this.closed) return;
         await this.saveSession(session);
@@ -317,14 +356,12 @@ export class AndroidMagnitLogin {
       } catch (cause) {
         if (this.closed) return;
         if (cause?.code === "access_denied") {
-          this.setState("access_denied", "Магнит запретил проверку сессии (403). Вкладка закрыта; обход защиты не выполняется.");
-          await this.cleanup();
+          this.setState("access_denied", "Официальный вход подтверждён, но HTTP-проверка корзины получила 403. Вкладка Магнит оставлена открытой; обход защиты не выполняется.");
+          await this.cleanup({ closeTab: false });
           return;
         }
-        const message = cause?.code === "session_rejected"
-          ? "Магнит отклонил сессию. Завершите вход в открытой вкладке; этот вариант Cookie повторно не проверялся."
-          : "Не удалось подтвердить сессию одним чтением корзины. Проверьте вкладку и попробуйте войти заново.";
-        this.setState("waiting", message);
+        this.setState("login_unavailable", "Официальный вход подтверждён, но HTTP-чтение корзины не прошло. Вкладка Магнит оставлена открытой; сессия не сохранена.");
+        await this.cleanup({ closeTab: false });
       } finally { this.verifying = false; }
     } catch {
       if (this.closed) return;
@@ -341,14 +378,14 @@ export class AndroidMagnitLogin {
     return this.snapshot();
   }
 
-  async cleanup() {
+  async cleanup({ closeTab = true } = {}) {
     this.closed = true;
     clearInterval(this.timer);
     if (this.cleanupPromise) return this.cleanupPromise;
     const port=this.port;const targetId=this.targetId;const serial=this.serial;const cdp=this.cdp;
     this.port=null;this.targetId=null;this.cdp=null;this.sessionId=null;
     this.cleanupPromise=(async()=>{
-    if (cdp && targetId) try { await cdp.send("Target.closeTarget", { targetId }, 3000); } catch {}
+    if (closeTab && cdp && targetId) try { await cdp.send("Target.closeTarget", { targetId }, 3000); } catch {}
     cdp?.close();
     if (serial && port) {
       try { await this.exec(["-s", serial, "forward", "--remove", `tcp:${port}`]); } catch {}
