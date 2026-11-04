@@ -18,9 +18,9 @@ export default async function Home() {
         </header>
 
         <section className="mt-8 rounded-[28px] bg-[#292622] p-6 text-white shadow-[0_18px_50px_#30271f22] sm:p-9">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-xs text-[#e7ded2]"><LockKeyhole size={14} /> Поиск по HTTP API, без учётных данных Магнит</div>
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-xs text-[#e7ded2]"><LockKeyhole size={14} /> Вход на сайте Магнит · поиск и корзина по HTTP</div>
           <h1 className="max-w-xl text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">Ищите товары Магнит с телефона</h1>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-[#d4cec6] sm:text-base">Сервис использует опубликованный в открытом коде HTTP-контракт поиска каталога. Вход, корзина и оформление заказа этим MCP не поддерживаются.</p>
+          <p className="mt-4 max-w-2xl text-sm leading-6 text-[#d4cec6] sm:text-base">На Android владелец входит вручную в новую вкладку официального Chrome. После подтверждения сессии MCP ищет товары и может добавлять подходящие позиции в express-корзину. Оформление заказа и оплата не поддерживаются.</p>
           <div className={`mt-7 flex items-start gap-3 rounded-2xl px-4 py-4 ${bridge.configured ? "bg-[#164f38]" : "bg-[#5a4023]"}`}>
             {bridge.configured ? <CheckCircle2 className="mt-0.5 shrink-0" size={19} /> : <CircleAlert className="mt-0.5 shrink-0" size={19} />}
             <div className="min-w-0">
@@ -33,9 +33,9 @@ export default async function Home() {
 
         <section className="mt-6 grid gap-4 sm:grid-cols-3">
           {[
-            ["01", "Запустите Node", "На Android установите Node.js в Termux и запустите HTTP-сервис локально. Docker на Linux тоже поддерживается."],
-            ["02", "Найдите товары", "В мобильной форме введите код магазина, режим доставки или магазина и поисковый запрос."],
-            ["03", "Подключите MCP", "Для Sites задайте публичный HTTPS адрес /mcp и токен. MCP ищет товары и категории; корзину и заказ не меняет."],
+            ["01", "Запустите Node в Termux", "Свяжите ADB с этим Android вручную. При нескольких устройствах укажите ANDROID_DEVICE_SERIAL."],
+            ["02", "Войдите в Магнит", "Кнопка откроет отдельную вкладку официального Chrome. Введите телефон, SMS и CAPTCHA там; после входа откройте express-корзину."],
+            ["03", "Ищите и добавляйте", "Поиск и ограниченное добавление выполняются HTTP-инструментами. Корзину можно прочитать и изменить; заказ не оформляется."],
           ].map(([number, title, description]) => (
             <article key={number} className="rounded-3xl border border-[#e9e3da] bg-white p-5">
               <span className="text-xs font-extrabold tracking-[.16em] text-[#d7352f]">{number}</span>
@@ -47,7 +47,7 @@ export default async function Home() {
 
         <section className="mt-5 rounded-3xl border border-[#e9e3da] bg-white p-5 sm:p-6">
           <h2 className="text-lg font-bold">Настройка для владельца</h2>
-          <p className="mt-2 text-sm leading-6 text-[#6d675f]">Node HTTP-сервис можно запустить в Termux на телефоне и открыть по localhost. MCP-запросы из ChatGPT требуют публичного HTTPS-адреса; локальный URL сам по себе недоступен из Sites. Условия Магнит могут измениться, live совместимость не подтверждена. После настройки задайте в runtime secrets:</p>
+          <p className="mt-2 text-sm leading-6 text-[#6d675f]">Node HTTP-сервис запускается в Termux на Android; только так его локальный helper может открыть вкладку на том же телефоне. MCP-запросы из ChatGPT требуют отдельный публичный HTTPS endpoint, доступный Sites. Условия Магнит могут измениться; вход на реальном устройстве и live совместимость не проверены. После настройки задайте в runtime secrets:</p>
           <pre className="mt-4 overflow-x-auto rounded-2xl bg-[#292622] p-4 text-xs leading-6 text-[#f4eee6]"><code>MCP_BRIDGE_URL=https://ваш-сервер.example/mcp{"\n"}MCP_BRIDGE_TOKEN=тот-же-секрет-что-на-сервере</code></pre>
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
             <a className="inline-flex items-center gap-1.5 font-semibold text-[#b92d28] no-underline" href="https://github.com/ignatyev/magnit-mcp" target="_blank" rel="noreferrer">Репозиторий и инструкция <ArrowUpRight size={15} /></a>
@@ -55,7 +55,7 @@ export default async function Home() {
           </div>
         </section>
 
-        <p className="mx-auto mt-6 max-w-xl text-center text-xs leading-5 text-[#837d74]">Этот каталог не добавляет товары в корзину и не оформляет заказ. Для покупки используйте приложение или сайт Магнит.</p>
+        <p className="mx-auto mt-6 max-w-xl text-center text-xs leading-5 text-[#837d74]">Перед оформлением проверьте товары, адрес, способ доставки и итоговую сумму в официальном приложении или на сайте Магнит. Этот сервис не создаёт заказ и не проводит оплату.</p>
       </div>
     </main>
   );

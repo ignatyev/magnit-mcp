@@ -1,73 +1,64 @@
-# HTTP-сервис Магнит MCP
+# HTTP MCP Магнит
 
-Чистый Node.js HTTP-сервис: без Chromium, браузерного профиля, Playwright, ADB и устройства. На Android его можно запустить локально через Termux. Мобильная страница предоставляет поиск каталога; MCP endpoint — `/mcp`.
+## Что поддерживается
 
-## Реализованные возможности
+- `magnit_search_products`, `magnit_list_categories` для режимов `delivery`, `retail`, `express`.
+- `magnit_view_cart` и `magnit_add_to_cart` для express-корзины с активной сессией владельца.
+- Ручной вход в Магнит на официальной Android вкладке Chrome. SMS и CAPTCHA обрабатывает сам пользователь на сайте; сервис не хранит их значения и не автоматизирует решение CAPTCHA.
+- `magnit_status` возвращает только capability, ссылку owner UI, режим/магазин сессии и факт необходимости перечитать корзину. Cookie и токены никогда не возвращаются в MCP.
 
-- `magnit_status` — сообщает поддерживаемые функции и границы, не делая live-проверку Магнит.
-- `magnit_search_products` — поиск по названию, коду магазина и явно выбранному режиму (`delivery` или `retail`).
-- `magnit_list_categories` — категории для кода магазина и выбранного режима.
-- Локальная мобильная форма `/` делает тот же HTTP поиск после входа паролем самого сервиса.
+Оформление заказа, оплата и удаление из корзины не поддерживаются. Суммы `lite` не являются итоговым чеком. Автоматическое добавление доступно только для недавно найденного товара, соответствующего ограниченному правилу наблюдавшегося express HAR: совпадающие непустые `id`/`productId`, `service` и `targetCart` равны `express`, выбранный `storeCode`, товар не весовой, `minOrderQuantity=1`, `orderStepQuantity=1`, остальные ограничения товара равны `false`. Правило не прошло live-проверку; весовые товары исключены.
 
-Вход Магнит ID, SMS, корзина, заказ и оплата не поддерживаются. Реальные возможности проверки корзины/заказа и контрактов входа не удалось подтвердить; MCP не выдаёт инструменты с такими именами.
+Добавление читает актуальную корзину, проверяет один express формат и контекст магазина, сохраняет все текущие `goodId`, `offerId`, `qnty`, выполняет ровно один `PUT`, затем сравнивает все позиции и количества с ответом. Счётчик `formats.itemsCount` может отставать от `items.length`, поэтому сервис не принимает его за размер корзины. Неизвестные позиции, повторы идентификаторов, другой сервис/магазин или несколько форматов блокируют запись. Неопределённый результат сохраняется в зашифрованном owner state: новое добавление блокируется до отдельного успешного вызова `magnit_view_cart`. Сериализация действует внутри процесса; независимые клиенты могут изменить корзину одновременно.
 
-## Контракт каталога
+## Android и Termux
 
-Реализация опирается на исходники двух открытых проектов:
-
-- `3vgen/market-screening` использует `POST https://magnit.ru/webgate/v2/goods/search`, поля `term`, `pagination`, `sort`, `includeAdultGoods`, `storeCode`, `storeType: "1"`, `catalogType: "1"`; цены хранит в копейках.
-- `1artik1/ComboPizzaSushiMCP` также использует этот endpoint и описывает `GET /webgate/v3/categories/store/{storeCode}`. Для доставки там указаны `storeType: "dostavka"`, `catalogType: "3"`.
-
-Источники и API сторонние, неофициальные, в документации Магнит эти контракты не подтверждены. Режим явно выбирается, потому что эти два публичных клиента используют разные значения. Live-доступность, текущий ответ API и региональная поддержка не проверялись. HTTP 403 возвращается как `access_restricted`, без повтора или попытки обойти защиту. TLS certificate verification включён, перенаправления запрещены; заголовки подмены устройства не используются.
-
-## Запуск локально в Termux
-
-Требуется Node.js 22.13 или новее. В Termux установите Node.js и npm:
+Требуется Node.js 22.13+, npm и `android-tools`:
 
 ```sh
 pkg update
-pkg install nodejs-lts npm git
+pkg install nodejs-lts npm android-tools git
+git clone https://github.com/ignatyev/magnit-mcp.git
+cd magnit-mcp/bridge
+cp .env.example .env
 ```
 
-Файл `.env.example` содержит loopback defaults; скопируйте его в `.env`, замените оба значения случайными независимыми строками от 32 символов.
+Задайте в `.env` два разных random secret (не менее 32 символов): `MCP_BEARER_TOKEN` и `PHONE_ACCESS_SECRET`. Оставьте `PUBLIC_BASE_URL=http://127.0.0.1:8080`, `HOST=127.0.0.1`. Если подключено несколько устройств, в `ANDROID_DEVICE_SERIAL` укажите serial из `adb devices -l`.
+
+На Android вручную включите **Параметры разработчика → Беспроводная отладка**. Пара и connect используют разные динамические адреса/порты из Android настроек:
 
 ```sh
-cd bridge
-cp .env.example .env
-node --env-file-if-exists=.env src/server.js
+adb pair <адрес-и-порт-pairing-из-настроек-Android>
+adb connect <адрес-и-порт-connect-из-настроек-Android>
+adb devices -l
+npm start
 ```
 
-Откройте `http://127.0.0.1:8080` на телефоне, введите `PHONE_ACCESS_SECRET`, затем укажите свой код магазина и режим. Локальный HTTP допускается только для loopback; не меняйте `HOST` на сетевой адрес в этой конфигурации. Пароли Магнит и SMS не нужны.
+Откройте `http://127.0.0.1:8080`, войдите паролем сервиса и нажмите **Войти в Магнит**. Node использует `adb devices -l`, создаёт только собственный `adb forward` и новую вкладку официального `https://magnit.ru/` через Chrome DevTools Protocol. Никаких `adb shell`, переключений настроек, паролей, SMS или токенов CAPTCHA сервис не отправляет. Вкладка ждёт ручной вход и переход в express-корзину. CDP наблюдает только `GET https://magnit.ru/webgate/v1/carts/lite` и запрашивает только `Network.getCookies` для этого URL. Затем сервис один раз вызывает `GET https://magnit.ru/_auth/session`, требует `authorized: true`, один раз читает корзину и только тогда шифрует сессию. При 403 он закрывает временную вкладку без повтора. После успеха или отмены закрываются только созданная вкладка, WebSocket и собственный ADB-forward; остальные Chrome вкладки и профиль остаются открыты. Реальный Android/Chrome здесь не запускался.
 
-Для вызова MCP из Sites/ChatGPT нужен публичный HTTPS endpoint: `PUBLIC_BASE_URL` должен совпадать с внешним URL сервиса и завершаться TLS на корректно настроенном reverse proxy. Порт MCP не публикуйте без HTTPS. Сервис не создаёт tunnel и не меняет сетевые настройки телефона. Локальный `127.0.0.1` напрямую из ChatGPT недоступен.
+Сервис не подключается к произвольному устройству: если online устройств несколько, без `ANDROID_DEVICE_SERIAL` вход просит владельца указать serial. Если ADB/Chrome не готовы, owner UI показывает настройку. Termux процесс должен работать на том же Android устройстве; удалённый Docker helper не может управлять Chrome телефона.
 
-## Docker на Linux
+Официальные справки: [Chrome remote debugging on Android](https://developer.chrome.com/docs/devtools/remote-debugging) и [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/).
 
-Задайте `PUBLIC_BASE_URL` с HTTPS адресом, разные `MCP_BEARER_TOKEN` и `PHONE_ACCESS_SECRET`, затем запустите:
+## Локальный запуск и внешний MCP
 
 ```sh
-cp .env.example .env
-docker compose up --build -d
+npm start
 ```
 
-`docker-compose.yml` предполагает внешний TLS reverse proxy, который перезаписывает `X-Forwarded-For` и передаёт `X-Forwarded-Proto: https`. Сервис слушает контейнерный порт 8080 только во внутренней сети Compose.
+`npm start` загружает `.env`. Откройте `http://127.0.0.1:8080`. Plain HTTP разрешён только loopback. Для вызова Sites/ChatGPT нужен доступный bridge HTTPS URL, настроенный внешним TLS reverse proxy или самостоятельно выбранным tunnel; автоматической публикации нет. В Site runtime secrets задайте `MCP_BRIDGE_URL=https://<домен>/mcp` и `MCP_BRIDGE_TOKEN` с тем же значением, что `MCP_BEARER_TOKEN`.
 
-## Настройка Site
+Docker на Linux предназначен для HTTP MCP и не может обслуживать Android CDP-вход на телефоне. Он использует TLS reverse proxy и постоянный именованный том для зашифрованной сессии. Порт 8080 напрямую наружу не публикуется.
 
-В runtime secrets Sites задайте:
+## HAR fallback
 
-```text
-MCP_BRIDGE_URL=https://<ваш-домен>/mcp
-MCP_BRIDGE_TOKEN=<тот же токен, что MCP_BEARER_TOKEN>
-```
+Импорт HAR скрыт в дополнительных настройках и не нужен для штатного входа. Обычный экспорт Chrome удаляет Cookie и будет отклонён с `sanitized_export/missing_cookie`. Импортёр допускает только exact-origin HTTPS Magnit `GET/PUT /webgate/v1/carts/lite`, выбирает последнюю express запись, требует реальный Cookie и валидный контекст, затем проверяет сессию и корзину перед сохранением. Он не принимает auth/OTP/captcha endpoints и не сохраняет исходный HAR. Не передавайте sensitive HAR в чат или репозиторий.
 
-Затем опубликуйте Site. Пока эти secrets отсутствуют, MCP возвращает `setup_required`.
-
-## Проверки
+## Воспроизводимые проверки
 
 ```sh
 npm test
 node --check src/server.js
 ```
 
-Все проверки используют mock transport; тесты не обращаются к сайту Магнит. Они проверяют URL/body, явное соответствие режимов, преобразование цен из копеек, неизвестное наличие/цену, размер ответа, TLS redirect policy и поведение при 403/таймауте.
+Тесты используют синтетические cookies, mock ADB/CDP и mock upstream. Они проверяют выбор устройства, loopback WebSocket/origin allowlist, cleanup вкладки и ADB-forward, auth+cart verification до session save, HAR redaction rejection, ciphertext persistence, express mapping, eligibility TTL, cart preservation, ambiguous write lock и отсутствие повторов. Реальный аккаунт, SMS, ADB/Android и Magnit API не проверяются.

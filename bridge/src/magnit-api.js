@@ -21,6 +21,7 @@ export function validateStoreCode(value) {
 }
 
 export function catalogMode(mode) {
+  if (mode === "express") return { mode, storeType: "express", catalogType: "2" };
   if (mode === "delivery") return { mode, storeType: "dostavka", catalogType: "3" };
   if (mode === "retail") return { mode, storeType: "1", catalogType: "1" };
   throw new Error("mode must be delivery or retail.");
@@ -55,14 +56,31 @@ export function parseProducts(payload) {
     const oldPrice = Number.isSafeInteger(item?.promotion?.oldPrice) && item.promotion.oldPrice >= 0 ? item.promotion.oldPrice : null;
     const isPromotion = Boolean(price !== null && item?.promotion?.isPromotion && oldPrice !== null && oldPrice > price);
     const quantity = item?.quantity == null ? null : Number(item.quantity);
+    const minOrder = Number.isSafeInteger(item?.orderProperties?.minOrderQuantity) && item.orderProperties.minOrderQuantity > 0 ? item.orderProperties.minOrderQuantity : null;
+    const orderStep = Number.isSafeInteger(item?.orderProperties?.orderStepQuantity) && item.orderProperties.orderStepQuantity > 0 ? item.orderProperties.orderStepQuantity : null;
+    const sourceId = typeof item?.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(item.id) ? item.id : "";
+    const productId = typeof item?.productId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(item.productId) ? item.productId : "";
+    const addRule = "observed-express-fixture-v1";
+    const cartAddable = item?.service === "express" && item?.targetCart === "express" &&
+      typeof item?.storeCode === "string" && item.storeCode === String(payload.storeCode) &&
+      sourceId.length > 0 && sourceId === productId && item?.weighted?.isWeighted === false && minOrder === 1 && orderStep === 1 &&
+      item?.isAdditionalActionRequired === false && item?.isBiometryRequired === false && item?.isForAdults === false && item?.needPassport === false && item?.pickupOnly === false;
     return {
-      id: cleanText(item?.productId ?? item?.id, 48),
+      id: cleanText(item?.productId ?? item?.id, 180),
+      source_id: sourceId || null,
+      product_id: productId || null,
       name: cleanText(item?.name, 180),
       price_kopecks: price,
       price_rubles: price === null ? null : price / 100,
       old_price_kopecks: isPromotion ? oldPrice : null,
       in_stock: quantity == null || !Number.isFinite(quantity) ? null : quantity > 0,
       quantity: quantity != null && Number.isFinite(quantity) ? quantity : null,
+      min_order_quantity: minOrder,
+      order_step_quantity: orderStep,
+      cart_addable: cartAddable,
+      cart_add_rule: cartAddable ? addRule : null,
+      good_id: cartAddable ? productId : null,
+      offer_id: cartAddable ? sourceId : null,
       badges: Array.isArray(item?.badges) ? item.badges.slice(0, 8).map((badge) => cleanText(badge?.text, 64)).filter(Boolean) : [],
       product_url: item?.seoCode && (item?.productId || item?.id) ? `https://magnit.ru/product/${encodeURIComponent(cleanText(item.productId || item.id, 48))}-${encodeURIComponent(cleanText(item.seoCode, 80))}?shopCode=${encodeURIComponent(String(validateStoreCode(payload.storeCode)))}` : null,
     };

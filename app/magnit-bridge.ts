@@ -3,18 +3,18 @@ import { env } from "cloudflare:workers";
 export const siteTools = [
   {
     name: "magnit_status",
-    description: "Показать поддерживаемые возможности HTTP-сервера Магнит. Доступность upstream не проверяется.",
+    description: "Показать поддерживаемые HTTP-возможности, ссылку owner login UI и безопасное состояние сессии. Cookie и токены не выводятся.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "magnit_search_products",
-    description: "Поиск в каталоге Магнит. Передавайте код магазина и режим: delivery или retail. Вход, корзина и заказ не поддерживаются.",
+    description: "Поиск в каталоге Магнит. Передавайте код магазина и режим. В express выдаёт good_id/offer_id только для товаров, прошедших ограниченное наблюдавшееся правило; весовые позиции не включаются.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", minLength: 1, maxLength: 120 },
         store_code: { type: "string", pattern: "^[0-9]{4,8}$" },
-        mode: { type: "string", enum: ["delivery", "retail"] },
+        mode: { type: "string", enum: ["delivery", "retail", "express"] },
         limit: { type: "integer", minimum: 1, maximum: 30, default: 20 },
       },
       required: ["query", "store_code", "mode"],
@@ -26,10 +26,20 @@ export const siteTools = [
     description: "Список категорий каталога для кода магазина и режима delivery или retail.",
     inputSchema: {
       type: "object",
-      properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["delivery", "retail"] } },
+      properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["delivery", "retail", "express"] } },
       required: ["store_code", "mode"],
       additionalProperties: false,
     },
+  },
+  {
+    name: "magnit_view_cart",
+    description: "Прочитать lite-корзину express для явно указанного магазина. Нужна импортированная владельцем сессия; суммы не являются итогом заказа.",
+    inputSchema: { type: "object", properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["express"] } }, required: ["store_code", "mode"], additionalProperties: false },
+  },
+  {
+    name: "magnit_add_to_cart",
+    description: "Добавить товар только по good_id/offer_id из недавнего express-поиска. Сохраняет текущие позиции; после неопределённого результата требует отдельного чтения корзины; автоматических повторов нет.",
+    inputSchema: { type: "object", properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["express"] }, good_id: { type: "string", minLength: 1, maxLength: 128 }, offer_id: { type: "string", minLength: 1, maxLength: 128 }, quantity: { type: "integer", minimum: 1, maximum: 99 } }, required: ["store_code", "mode", "good_id", "offer_id", "quantity"], additionalProperties: false },
   },
 ] as const;
 

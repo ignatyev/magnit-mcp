@@ -1,4 +1,5 @@
 .env
 data/
+*.har
 node_modules/
 test-results/

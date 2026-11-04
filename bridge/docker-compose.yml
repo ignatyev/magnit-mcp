@@ -12,6 +12,8 @@ services:
       TRUST_PROXY: "1"
     expose:
       - "8080"
+    volumes:
+      - magnit-session:/app/data
     # Put this behind a TLS reverse proxy. Never publish port 8080 directly.
     networks:
       - private
@@ -19,3 +21,6 @@ services:
 networks:
   private:
     driver: bridge
+
+volumes:
+  magnit-session:

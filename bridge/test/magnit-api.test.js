@@ -15,7 +15,7 @@ function jsonResponse(body, status = 200) {
 }
 
 const rawProducts = { items: [
-  { id: "800", productId: "801", seoCode: "milk", name: "Молоко 2,5% 900 мл", price: 16999, quantity: 7, promotion: { isPromotion: true, oldPrice: 19999 }, badges: [{ text: "По карте" }] },
+  { id: "800", productId: "801", seoCode: "milk", name: "Молоко 2,5% 900 мл", price: 16999, quantity: 7, orderProperties: { minOrderQuantity: 1, orderStepQuantity: 1 }, promotion: { isPromotion: true, oldPrice: 19999 }, badges: [{ text: "По карте" }] },
   { id: "802", name: "Товар без цены", price: null, quantity: null, promotion: { isPromotion: true, oldPrice: 1000 } },
   { id: "803", name: "Неверная цена", price: 1.25, quantity: "unknown" },
 ] };
@@ -34,6 +34,9 @@ test("search issues the fixed Magnit POST and explicit delivery payload", async 
   assert.equal(result.products[0].price_kopecks, 16999);
   assert.equal(result.products[0].price_rubles, 169.99);
   assert.equal(result.products[0].old_price_kopecks, 19999);
+  assert.equal(result.products[0].source_id, "800");
+  assert.equal(result.products[0].product_id, "801");
+  assert.equal(result.products[0].min_order_quantity, 1);
   assert.equal(result.products[0].product_url, "https://magnit.ru/product/801-milk?shopCode=123456");
   assert.equal(result.products[1].price_kopecks, null);
   assert.equal(result.products[1].price_rubles, null);
@@ -50,6 +53,32 @@ test("retail catalog mode is explicit and not silently mapped to delivery", () =
     includeAdultGoods: true, storeCode: "1234", storeType: "1", catalogType: "1",
   });
   assert.throws(() => catalogMode("unknown"));
+});
+
+test("express mode uses captured catalogType 2 mapping", () => {
+  assert.deepEqual(catalogMode("express"), { mode: "express", storeType: "express", catalogType: "2" });
+  assert.deepEqual(makeSearchPayload("кефир", "123456", 3, "express"), {
+    term: "кефир", pagination: { limit: 3, offset: 0 }, sort: { order: "desc", type: "popularity" },
+    includeAdultGoods: true, storeCode: "123456", storeType: "express", catalogType: "2",
+  });
+  assert.match(magnitCategoriesUrl("123456", "express"), /storetype=express&catalogtype=2$/);
+});
+
+test("cart eligibility applies only the constrained express identity and unit rule", () => {
+  const product = {
+    id: "same-id", productId: "same-id", service: "express", targetCart: "express", storeCode: "123456",
+    weighted: { isWeighted: false }, orderProperties: { minOrderQuantity: 1, orderStepQuantity: 1 },
+    isAdditionalActionRequired: false, isBiometryRequired: false, isForAdults: false, needPassport: false, pickupOnly: false,
+    name: "Synthetic item",
+  };
+  const parsed = parseProducts({ storeCode: "123456", items: [product, { ...product, id: "weighted", productId: "weighted", weighted: { isWeighted: true } }, { ...product, id: "wrong-store", productId: "wrong-store", storeCode: "654321" }] });
+  assert.equal(parsed[0].cart_addable, true);
+  assert.equal(parsed[0].good_id, "same-id");
+  assert.equal(parsed[0].offer_id, "same-id");
+  assert.equal(parsed[0].cart_add_rule, "observed-express-fixture-v1");
+  assert.equal(parsed[1].cart_addable, false);
+  assert.equal(parsed[1].good_id, null);
+  assert.equal(parsed[2].cart_addable, false);
 });
 
 test("input validation bounds store code, query, and page size before fetch", async () => {
