@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { constantTimeEqual, createPhoneSessionCodec } from "./policy.js";
 import { getMagnitCategories, MagnitApiError, searchMagnit, validateStoreCode } from "./magnit-api.js";
 import { addMagnitCartItem, viewMagnitCart } from "./cart.js";
-import { createEncryptedSessionStore, extractMagnitSessionFromHar, publicSessionState } from "./session-store.js";
+import { bindExpressSearchContext, createEncryptedSessionStore, extractMagnitSessionFromHar, publicSessionState } from "./session-store.js";
 import { createAndroidLogin, isMagnitAuthenticated } from "./android-login.js";
 import { PHONE_HTML } from "./phone-page.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
@@ -88,6 +88,7 @@ function readSession(req) { const raw=(req.headers.cookie||"").split(";").map((s
 function cookie(res,value,maxAge) {const parts=[`${COOKIE_NAME}=${value}`,"Path=/","HttpOnly","SameSite=Strict",`Max-Age=${maxAge}`];if(COOKIE_SECURE)parts.push("Secure");res.setHeader("Set-Cookie",parts.join("; "));}
 function requirePhone(req,res){if(!originMatches(req)){error(res,403,"Обновите страницу и попробуйте ещё раз.");return null}const session=readSession(req);if(!session){error(res,401,localOnly?"Обновите страницу для локального входа.":"Введите пароль доступа.");return null}if(!constantTimeEqual(req.headers["x-csrf-token"],session.csrf)){error(res,403,"Обновите страницу и попробуйте ещё раз.");return null}return session}
 function phonePage(){return localOnly?PHONE_HTML.replace(/<section id="gate"[\s\S]*?<\/section>/," ").replace('<button id="logout" class="soft">Выход</button>',"").replace("<body>","<body class=\"local-owner\">"):PHONE_HTML}
+async function bindSearchStore(storeCode){const saved=await sessionStore.load();if(!saved?.cookie)return;if(saved.context?.service==="express"&&saved.context.storeCode===storeCode&&saved.context.bff==="1")return;await sessionStore.save(bindExpressSearchContext(saved,storeCode))}
 function rpc(id,result){return {jsonrpc:"2.0",id,result}}
 function rpcError(id,code,message){return {jsonrpc:"2.0",id,error:{code,message}}}
 async function handleMcp(req,res){
@@ -99,19 +100,19 @@ async function handleMcp(req,res){
   if(!params||typeof params!=="object"||Array.isArray(params))return writeJson(res,400,rpcError(id,-32602,"Invalid params"));
   if(body.method==="notifications/initialized")return res.writeHead(202,{"Cache-Control":"no-store"}).end();
   if(body.method==="server/discover")return writeJson(res,200,rpc(id,{supportedVersions:["2026-07-28"],capabilities:{tools:{}}}));
-  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.3"}}));
+  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.4"}}));
   if(body.method==="tools/list")return writeJson(res,200,rpc(id,{tools:TOOLS}));
   if(body.method==="ping")return writeJson(res,200,rpc(id,{}));
   if(body.method!=="tools/call")return writeJson(res,200,rpcError(id,-32601,"Method not found"));
   if(params.name==="magnit_status"){
     const saved = await sessionStore.load();
-    return writeJson(res,200,rpc(id,{content:[{type:"text",text:JSON.stringify({service:"ready",capabilities:["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart"],login_capability:"owner_android_chrome_manual",phone_login_url:PUBLIC_BASE_URL,cart_session:publicSessionState(saved),live_compatibility:"unverified",unsupported:["automated_login","sms_entry","captcha_solving","checkout","order","payment"]})}]}));
+    return writeJson(res,200,rpc(id,{content:[{type:"text",text:JSON.stringify({service:"ready",capabilities:["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart"],login_capability:"owner_android_chrome_manual",phone_login_url:PUBLIC_BASE_URL,auth_session:publicSessionState(saved),live_compatibility:"unverified",unsupported:["automated_login","sms_entry","captcha_solving","checkout","order","payment"]})}]}));
   }
   if(!["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart"].includes(params.name))return writeJson(res,200,rpc(id,{isError:true,content:[{type:"text",text:"Инструмент не поддерживается."}]}));
   const args=params.arguments??{};if(!args||typeof args!=="object"||Array.isArray(args))return writeJson(res,200,rpcError(id,-32602,"Invalid params"));
   try{
     let result;
-    if(params.name==="magnit_search_products") {result=await searchMagnit({query:args.query,storeCode:args.store_code,mode:args.mode,limit:args.limit??20});eligibleCartItems.remember(result)}
+    if(params.name==="magnit_search_products") {result=await searchMagnit({query:args.query,storeCode:args.store_code,mode:args.mode,limit:args.limit??20});eligibleCartItems.remember(result);if(args.mode==="express")await bindSearchStore(args.store_code)}
     else if(params.name==="magnit_list_categories") result=await getMagnitCategories({storeCode:args.store_code,mode:args.mode});
     else {
       const saved=await sessionStore.load();
@@ -131,7 +132,7 @@ async function handlePhone(req,res,url){
   if(req.method==="GET"&&url.pathname==="/"){res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","Content-Security-Policy":"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'","X-Content-Type-Options":"nosniff","Referrer-Policy":"no-referrer","X-Frame-Options":"DENY"});return res.end(phonePage())}
   if(req.method==="POST"&&url.pathname==="/api/phone/session"){if(localOnly)return error(res,404,"Страница входа не используется в локальном режиме.");if(!originMatches(req))return error(res,403,"Откройте страницу сервера напрямую.");if(!rateLimit(`login:${peer(req)}`,8,60_000))return error(res,429,"Слишком много попыток.");let b;try{b=await readJson(req)}catch{return error(res,400)}if(!constantTimeEqual(b.passphrase,LEGACY_PHONE_ACCESS_SECRET))return error(res,401,"Пароль не принят.");const csrf=randomBytes(24).toString("base64url");cookie(res,phoneSessions.issue(csrf),7*24*60*60);return writeJson(res,200,{csrf})}
   if(req.method==="GET"&&url.pathname==="/api/state"){
-    if(localOnly){if(!isDirectLocalOwnerRequest(req,publicUrl.host)||(req.headers.origin&&!originMatches(req)))return error(res,403,"Локальный доступ разрешён только с этого телефона.");const existing=readSession(req);if(existing)return writeJson(res,200,{csrf:existing.csrf});const csrf=randomBytes(24).toString("base64url");cookie(res,phoneSessions.issue(csrf),7*24*60*60);return writeJson(res,200,{csrf})}
+    if(localOnly){if(!isDirectLocalOwnerRequest(req,LOCAL_OWNER_HOSTS)||(req.headers.origin&&!originMatches(req)))return error(res,403,"Локальный доступ разрешён только с этого телефона.");const existing=readSession(req);if(existing)return writeJson(res,200,{csrf:existing.csrf});const csrf=randomBytes(24).toString("base64url");cookie(res,phoneSessions.issue(csrf),7*24*60*60);return writeJson(res,200,{csrf})}
     const s=readSession(req);if(!s)return error(res,401,"Введите пароль доступа.");return writeJson(res,200,{csrf:s.csrf})
   }
   if(req.method==="GET"&&url.pathname==="/api/session-status"){if((req.headers.origin&&!originMatches(req))||!readSession(req))return error(res,401,"Введите пароль доступа.");return writeJson(res,200,publicSessionState(await sessionStore.load()))}
@@ -191,7 +192,7 @@ async function handlePhone(req,res,url){
     if(!requirePhone(req,res))return;
     if(!rateLimit(`search:${peer(req)}`,30,60_000))return error(res,429,"Подождите перед новым поиском.");
     let b;try{b=await readJson(req)}catch{return error(res,400)}
-    try{const result=await searchMagnit({query:b.query,storeCode:b.store_code,mode:b.mode,limit:b.limit??20});eligibleCartItems.remember(result);return writeJson(res,200,result)}
+    try{const result=await searchMagnit({query:b.query,storeCode:b.store_code,mode:b.mode,limit:b.limit??20});eligibleCartItems.remember(result);if(b.mode==="express")await bindSearchStore(b.store_code);return writeJson(res,200,result)}
     catch(cause){const status=cause instanceof MagnitApiError?cause.code:"invalid_arguments";const message=cause instanceof MagnitApiError?cause.message:(cause instanceof Error?cause.message:"Проверьте запрос, код магазина и режим.");return writeJson(res,400,{error:message,code:status})}
   }
   if(req.method==="POST"&&url.pathname==="/api/phone/logout"){if(!requirePhone(req,res))return;if(androidLogin&&["opening","waiting","verifying"].includes(androidLogin.snapshot().status))await androidLogin.cancel();cookie(res,"",0);return res.writeHead(204,{"Cache-Control":"no-store"}).end()}

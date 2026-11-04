@@ -2,7 +2,6 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import { MagnitApiError, validateStoreCode } from "./magnit-api.js";
-import { viewMagnitCart } from "./cart.js";
 
 const execFile = promisify(execFileCallback);
 const CART_URL = "https://magnit.ru/webgate/v1/carts/lite";
@@ -202,7 +201,7 @@ export class AndroidMagnitLogin {
     this.started = false;
     this.closed = false;
     this.authRequestIds = new Map();
-    this.cartVerificationStarted = false;
+    this.sessionSaveStarted = false;
     this.authenticated = false;
     this.verifying = false;
     this.context = null;
@@ -273,7 +272,7 @@ export class AndroidMagnitLogin {
       const navigation = await this.cdp.send("Page.navigate", { url: "https://magnit.ru/" }, 15_000, this.sessionId);
       if (typeof navigation?.errorText === "string" && navigation.errorText) throw new Error("page_navigation_failed");
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
-      this.setState("waiting", "В открытой вкладке войдите в Магнит и откройте express-корзину. Код и пароль вводите только на сайте Магнит.");
+      this.setState("waiting", "Завершите вход в официальной вкладке Магнит. Если вы уже вошли в Chrome, дождитесь проверки.");
       this.deadline = Date.now() + this.timeoutMs;
       this.timer = setInterval(() => void this.pollCookies(), this.intervalMs);
       void this.pollCookies();
@@ -336,31 +335,24 @@ export class AndroidMagnitLogin {
       await this.cleanup();
       return;
     }
-    if (!this.authenticated || !this.context) return;
+    if (!this.authenticated) return;
     this.polling=true;
     try {
       const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] }, 10_000, this.sessionId);
       if (this.closed) return;
       const cookie = magnitCookieHeader(result?.cookies);
-      if (!cookie || !this.context || !this.authenticated || this.verifying || this.cartVerificationStarted) return;
-      this.cartVerificationStarted = true;
+      if (!cookie || !this.authenticated || this.verifying || this.sessionSaveStarted) return;
+      this.sessionSaveStarted = true;
       this.verifying = true;
-      this.setState("verifying", "Проверяем вход одним безопасным чтением корзины…");
-      const session = { cookie, context: this.context };
+      this.setState("verifying", "Вход подтверждён. Сохраняем сессию Магнит…");
+      const session = { cookie, context: this.context || null };
       try {
-        await viewMagnitCart({ session, storeCode: this.context.storeCode, mode: "express", fetchImpl: this.fetchImpl });
-        if (this.closed) return;
         await this.saveSession(session);
-        this.setState("ready", "Вход подтверждён. Теперь инструменты работают с HTTP-каталогом и express-корзиной.");
+        this.setState("ready", "Вход сохранён. Для работы с корзиной выберите магазин в поиске.");
         await this.cleanup();
-      } catch (cause) {
+      } catch {
         if (this.closed) return;
-        if (cause?.code === "access_denied") {
-          this.setState("access_denied", "Официальный вход подтверждён, но HTTP-проверка корзины получила 403. Вкладка Магнит оставлена открытой; обход защиты не выполняется.");
-          await this.cleanup({ closeTab: false });
-          return;
-        }
-        this.setState("login_unavailable", "Официальный вход подтверждён, но HTTP-чтение корзины не прошло. Вкладка Магнит оставлена открытой; сессия не сохранена.");
+        this.setState("login_unavailable", "Вход подтверждён, но локально сохранить сессию не удалось. Вкладка Магнит оставлена открытой; проверьте место и доступ к хранилищу.");
         await this.cleanup({ closeTab: false });
       } finally { this.verifying = false; }
     } catch {

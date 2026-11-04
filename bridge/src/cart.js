@@ -6,10 +6,11 @@ let writeQueue = Promise.resolve();
 let reconciliationRequired = false;
 
 function requireSession(session, storeCode, mode) {
-  if (!session?.cookie || session?.context?.service !== "express") throw new MagnitApiError("session_missing", "Импортируйте актуальную сессию корзины Магнит для режима express.");
+  if (!session?.cookie) throw new MagnitApiError("session_missing", "Сначала войдите в Магнит на телефоне и сохраните сессию.");
+  if (session?.context?.service !== "express" || !session?.context?.storeCode || !session?.context?.bff) throw new MagnitApiError("store_context_required", "Сначала найдите товар в режиме «Экспресс» и выберите код магазина.");
   const selectedStoreCode = validateStoreCode(storeCode);
   validateStoreCode(session.context.storeCode);
-  if (mode !== "express" || selectedStoreCode !== session.context.storeCode) throw new MagnitApiError("context_mismatch", "Код магазина или режим не совпадает с импортированной сессией корзины.");
+  if (mode !== "express" || selectedStoreCode !== session.context.storeCode) throw new MagnitApiError("context_mismatch", "Код магазина или режим не совпадает с выбранным магазином корзины.");
   return session;
 }
 

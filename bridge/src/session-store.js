@@ -71,7 +71,7 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
       const data = Buffer.concat([cipher.update(JSON.stringify(session)), cipher.final()]);
       const packed = JSON.stringify({ v: 1, iv: iv.toString("base64url"), tag: cipher.getAuthTag().toString("base64url"), data: data.toString("base64url") });
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      const temporary = `${path}.${process.pid}.tmp`;
+      const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
       await writeFile(temporary, packed, { mode: 0o600 });
       await chmod(temporary, 0o600);
       await rename(temporary, path);
@@ -85,7 +85,8 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
         decipher.setAuthTag(Buffer.from(packed.tag, "base64url"));
         const plain = Buffer.concat([decipher.update(Buffer.from(packed.data, "base64url")), decipher.final()]);
         const session = JSON.parse(plain.toString("utf8"));
-        if (!session?.cookie || !session?.context?.storeCode || !session?.context?.service) return null;
+        if (typeof session?.cookie !== "string" || !session.cookie) return null;
+        if (session.context != null && (typeof session.context !== "object" || !/^\d{4,8}$/.test(String(session.context.storeCode ?? "")) || session.context.service !== "express" || typeof session.context.bff !== "string" || !session.context.bff)) return null;
         return session;
       } catch { return null; }
     },
@@ -94,5 +95,21 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
 }
 
 export function publicSessionState(session) {
-  return session ? { ready: true, store_code: session.context.storeCode, service: session.context.service, cart_reconciliation_required: session.cartReconciliationRequired === true } : { ready: false, cart_reconciliation_required: false };
+  const contextReady = !!(session?.context?.storeCode && session.context.service === "express");
+  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady, cart_http_access: "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false };
+}
+
+export function bindExpressSearchContext(session, storeCode) {
+  if (!session?.cookie) return session;
+  if (typeof storeCode !== "string" || !/^\d{4,8}$/.test(storeCode)) throw new Error("store_code должен содержать 4–8 цифр.");
+  const previous = session.context;
+  return {
+    ...session,
+    context: {
+      service: "express",
+      storeCode,
+      bff: "1",
+      permissionsJwt: previous?.service === "express" && previous.storeCode === storeCode ? previous.permissionsJwt || null : null,
+    },
+  };
 }
