@@ -1,113 +1,73 @@
-# Magnit phone bridge
+# HTTP-сервис Магнит MCP
 
-This bridge provides one owner with a phone sized view of a browser open to the official Magnit website, plus an authenticated HTTP MCP endpoint. It uses the visible Magnit website and browser interactions; it does not call the mobile app's signed API or automate a hidden checkout API. The official website returned `Forbidden` and an automation-check message during initial review, so catalog, authentication, cart, and checkout compatibility remain unverified; this code does not evade that restriction.
+Чистый Node.js HTTP-сервис: без Chromium, браузерного профиля, Playwright, ADB и устройства. На Android его можно запустить локально через Termux. Мобильная страница предоставляет поиск каталога; MCP endpoint — `/mcp`.
 
-## Current scope
+## Реализованные возможности
 
-- `magnit_open_home` opens `https://magnit.ru/`.
-- `magnit_search_products` opens the official site search URL with `term=`, `shopType=`, and optional `shopCode=`. The term route is reported by a public Magnit MCP project as live tested on 2026-08-20; the layout can change.
-- `magnit_page_summary` reads visible product-card text and a restricted set of visible button/link references. It never returns screenshots, page HTML, form values, or login/payment page text.
-- `magnit_click_reference` can click only a fresh visible reference with the exact text returned by the last page summary. It blocks checkout, order, purchase, and payment actions.
-- The phone page shows a protected screenshot of the same browser. The owner enters the Magnit ID phone number and SMS code on Magnit's own page. The bridge never requests, stores, or logs those values as application credentials.
-- The browser profile is persistent in a Docker volume so Magnit ID may remain signed in between sessions. Use **Забыть вход** in the phone page and delete the `magnit-profile` volume when you want the account session removed.
+- `magnit_status` — сообщает поддерживаемые функции и границы, не делая live-проверку Магнит.
+- `magnit_search_products` — поиск по названию, коду магазина и явно выбранному режиму (`delivery` или `retail`).
+- `magnit_list_categories` — категории для кода магазина и выбранного режима.
+- Локальная мобильная форма `/` делает тот же HTTP поиск после входа паролем самого сервиса.
 
-The account session and browser profile are sensitive. Deploy one private bridge per owner, keep the data volume private and encrypted at rest where available, and put the service behind HTTPS. This service does not submit the final purchase or payment; the user reviews and confirms those actions manually in the phone browser.
+Вход Магнит ID, SMS, корзина, заказ и оплата не поддерживаются. Реальные возможности проверки корзины/заказа и контрактов входа не удалось подтвердить; MCP не выдаёт инструменты с такими именами.
 
-## Experimental Android and Termux mode
+## Контракт каталога
 
-This mode runs Node MCP on the Android phone and does not require a VPS, but it relies on Playwright's experimental Android API and has not been validated on a real handset here. Android version, Chrome version, ADB pairing, and Playwright support can affect startup.
+Реализация опирается на исходники двух открытых проектов:
 
-1. In Termux install Node, npm, ADB tools, and Git:
+- `3vgen/market-screening` использует `POST https://magnit.ru/webgate/v2/goods/search`, поля `term`, `pagination`, `sort`, `includeAdultGoods`, `storeCode`, `storeType: "1"`, `catalogType: "1"`; цены хранит в копейках.
+- `1artik1/ComboPizzaSushiMCP` также использует этот endpoint и описывает `GET /webgate/v3/categories/store/{storeCode}`. Для доставки там указаны `storeType: "dostavka"`, `catalogType: "3"`.
 
-   ```sh
-   pkg update
-   pkg install nodejs-lts npm android-tools git
-   ```
+Источники и API сторонние, неофициальные, в документации Магнит эти контракты не подтверждены. Режим явно выбирается, потому что эти два публичных клиента используют разные значения. Live-доступность, текущий ответ API и региональная поддержка не проверялись. HTTP 403 возвращается как `access_restricted`, без повтора или попытки обойти защиту. TLS certificate verification включён, перенаправления запрещены; заголовки подмены устройства не используются.
 
-2. Install project dependencies without downloading desktop browser binaries:
+## Запуск локально в Termux
 
-   ```sh
-   cd bridge
-   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
-   ```
+Требуется Node.js 22.13 или новее. В Termux установите Node.js и npm:
 
-3. Enable Android Developer Options → Wireless debugging, pair Termux, then connect using the pairing and connection address/port shown by Android. Do not expose ADB outside the phone. The ADB daemon must be reachable at `127.0.0.1:5037` from Termux.
+```sh
+pkg update
+pkg install nodejs-lts npm git
+```
 
-   ```sh
-   adb pair <pair-address-and-port-shown-by-Android>
-   adb connect <connect-address-and-port-shown-by-Android>
-   adb devices
-   ```
+Файл `.env.example` содержит loopback defaults; скопируйте его в `.env`, замените оба значения случайными независимыми строками от 32 символов.
 
-4. Install Chrome 105 or later. In Chrome, enable **Enable command line on non-rooted devices**. Keep the screen awake while using the service because screenshot capture needs an active Android display.
+```sh
+cd bridge
+cp .env.example .env
+node --env-file-if-exists=.env src/server.js
+```
 
-5. Run with `BROWSER_MODE=android`. Use the exact serial printed by `adb devices` if multiple devices are connected. Only Chrome and Chrome Beta package names are accepted; the service opens a new tab and doesn't take over existing tabs.
+Откройте `http://127.0.0.1:8080` на телефоне, введите `PHONE_ACCESS_SECRET`, затем укажите свой код магазина и режим. Локальный HTTP допускается только для loopback; не меняйте `HOST` на сетевой адрес в этой конфигурации. Пароли Магнит и SMS не нужны.
 
-   ```sh
-   export BROWSER_MODE=android
-   export ANDROID_DEVICE_SERIAL='<serial from adb devices>'
-   export ANDROID_CHROME_PACKAGE=com.android.chrome
-   export MCP_BEARER_TOKEN='<long random secret>'
-   export PHONE_ACCESS_SECRET='<different long random secret>'
-   export PUBLIC_BASE_URL='https://<your-https-address>'
-   export TRUST_PROXY=1 COOKIE_SECURE=1 HOST=127.0.0.1 PORT=8080
-   npm start
-   ```
+Для вызова MCP из Sites/ChatGPT нужен публичный HTTPS endpoint: `PUBLIC_BASE_URL` должен совпадать с внешним URL сервиса и завершаться TLS на корректно настроенном reverse proxy. Порт MCP не публикуйте без HTTPS. Сервис не создаёт tunnel и не меняет сетевые настройки телефона. Локальный `127.0.0.1` напрямую из ChatGPT недоступен.
 
-   The Android mode uses the selected Chrome package's shared profile. Sign out of Magnit manually on the official page; the bridge does not erase or clear the shared Android browser profile. Use `com.chrome.beta` when that package is installed.
+## Docker на Linux
 
-6. Sites requires a public HTTPS MCP URL. Configure a secure tunnel separately to `http://127.0.0.1:8080`; this project does not expose it automatically. Keep MCP and phone passphrases private, and never publish ADB or DevTools ports.
+Задайте `PUBLIC_BASE_URL` с HTTPS адресом, разные `MCP_BEARER_TOKEN` и `PHONE_ACCESS_SECRET`, затем запустите:
 
-## Deploy
+```sh
+cp .env.example .env
+docker compose up --build -d
+```
 
-Use a private Docker host that can run headed Chromium under Xvfb and provides a stable public HTTPS URL. The host must provide outbound access to Magnit's official site and HTTPS termination. A TLS reverse proxy must overwrite `X-Forwarded-For` and forward `Host` and `X-Forwarded-Proto`; do not expose the container port directly to the public internet.
+`docker-compose.yml` предполагает внешний TLS reverse proxy, который перезаписывает `X-Forwarded-For` и передаёт `X-Forwarded-Proto: https`. Сервис слушает контейнерный порт 8080 только во внутренней сети Compose.
 
-1. Copy `.env.example` to `.env` and set `PUBLIC_BASE_URL` to the final HTTPS address. Set two different random secrets, each at least 32 characters:
+## Настройка Site
 
-   ```sh
-   openssl rand -base64 48
-   ```
+В runtime secrets Sites задайте:
 
-   Put one result in `MCP_BEARER_TOKEN` and a different result in `PHONE_ACCESS_SECRET`. Keep `.env` private and out of source control.
+```text
+MCP_BRIDGE_URL=https://<ваш-домен>/mcp
+MCP_BRIDGE_TOKEN=<тот же токен, что MCP_BEARER_TOKEN>
+```
 
-2. Configure the reverse proxy for HTTPS and route the host to the container's port `8080`. The included compose file keeps the container port private and requires the secrets above. Use the host's persistent disk for the `magnit-profile` volume.
+Затем опубликуйте Site. Пока эти secrets отсутствуют, MCP возвращает `setup_required`.
 
-3. Build and start:
-
-   ```sh
-   docker compose up --build -d
-   ```
-
-4. Open `PUBLIC_BASE_URL` on the phone, enter `PHONE_ACCESS_SECRET`, then sign into Magnit ID on the official Magnit page. The browser is 390 × 844 CSS pixels and the screenshot updates every few seconds.
-
-5. Configure the Sites integration with `MCP_BRIDGE_URL` set to `PUBLIC_BASE_URL/mcp` and `MCP_BRIDGE_TOKEN` set to the same value as `MCP_BEARER_TOKEN`. Keep both values in runtime secrets, never in tracked files. If the Site has no bridge configuration, the MCP tools must report setup required.
-
-## MCP
-
-The endpoint is `POST /mcp`, protected by `Authorization: Bearer <MCP_BEARER_TOKEN>`. It implements `server/discover`, `initialize`, `tools/list`, and `tools/call` using stateless JSON-RPC. Only these actions are exposed:
-
-| Tool | Behavior |
-| --- | --- |
-| `magnit_status` | Report the current safe page address and page type |
-| `magnit_open_home` | Open the Magnit home page |
-| `magnit_search_products` | Search Magnit's current official catalog page |
-| `magnit_page_summary` | Read visible product cards and safe action references |
-| `magnit_click_reference` | Click an exact, current visible reference; never submits purchase/payment actions |
-
-The MCP browser cannot navigate to arbitrary URLs, inspect hidden page data, execute JavaScript, inspect credentials, or click final order/payment controls. The phone UI is protected separately with a passphrase, an HttpOnly SameSite cookie, CSRF checks, and rate limits. Configure the proxy to supply only its own trusted `X-Forwarded-For` value.
-
-## Limits
-
-- The official website, authentication flow, product-card markup, store coverage, and availability can change. The implementation currently recognizes the public `article.unit-catalog-product-preview` card selector; it may need updating if Magnit changes its page.
-- The remote or Android browser may be denied by Magnit's access controls. The service makes no promise that sign-in, product search, or basket actions will work, and it does not attempt anti-bot workarounds.
-- Magnit ID may require additional verification or an in-page challenge. Complete that directly in the protected phone view.
-- This is one private browser/profile per deployment, not a multi-user service. Do not make the phone page public or share its access passphrase.
-- Checkout preparation may be possible through the visible official page, but MCP deliberately stops before final order/payment actions. Review the exact items, address, delivery method, and total and submit manually in Magnit's browser.
-
-## Local checks
+## Проверки
 
 ```sh
 npm test
+node --check src/server.js
 ```
 
-Tests cover the fixed Magnit navigation/search contract, cross-domain restrictions, purchase-action blocking, secret-field detection, output redaction, constant-time secret comparison, and signed phone-session expiry/tampering. A live login or purchase test requires the owner's Magnit ID session and must be completed manually; this repository does not perform a real order.
+Все проверки используют mock transport; тесты не обращаются к сайту Магнит. Они проверяют URL/body, явное соответствие режимов, преобразование цен из копеек, неизвестное наличие/цену, размер ответа, TLS redirect policy и поведение при 403/таймауте.

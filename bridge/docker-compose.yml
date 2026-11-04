@@ -3,25 +3,18 @@ services:
     build: .
     restart: unless-stopped
     init: true
-    shm_size: 1gb
     environment:
       PORT: "8080"
+      HOST: "0.0.0.0"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set the public HTTPS URL of this service}
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?Set a long random MCP bearer token}
       PHONE_ACCESS_SECRET: ${PHONE_ACCESS_SECRET:?Set a different long random phone passphrase}
-      BROWSER_PROFILE: /data/chromium-profile
-      COOKIE_SECURE: "1"
       TRUST_PROXY: "1"
-    volumes:
-      - magnit-profile:/data
     expose:
       - "8080"
     # Put this behind a TLS reverse proxy. Never publish port 8080 directly.
     networks:
       - private
-
-volumes:
-  magnit-profile:
 
 networks:
   private:

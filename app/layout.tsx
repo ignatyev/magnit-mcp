@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Магнит рядом — заказ с телефона",
-  description: "Телефонный браузер и MCP-инструменты для официального сайта Магнит.",
+  title: "Магнит рядом — каталог с телефона",
+  description: "Мобильный HTTP-каталог и MCP-поиск товаров Магнит.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
