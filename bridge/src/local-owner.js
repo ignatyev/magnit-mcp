@@ -12,7 +12,8 @@ export function isLoopbackAddress(address) {
 
 export function isDirectLocalOwnerRequest(req, expectedHost) {
   const host = String(req.headers.host || "").toLowerCase();
-  if (host !== String(expectedHost || "").toLowerCase() || !isLoopbackAddress(req.socket?.remoteAddress)) return false;
+  const allowedHosts = expectedHost instanceof Set ? expectedHost : new Set([String(expectedHost || "").toLowerCase()]);
+  if (!allowedHosts.has(host) || !isLoopbackAddress(req.socket?.remoteAddress)) return false;
   if (req.headers["sec-fetch-site"] && !["same-origin", "none"].includes(req.headers["sec-fetch-site"])) return false;
   return !["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"].some((name) => req.headers[name] !== undefined);
 }

@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     return json({ jsonrpc: "2.0", id: body.id ?? null, result: { supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } });
   }
   if (body.method === "initialize") {
-    return json({ jsonrpc: "2.0", id: body.id ?? null, result: { protocolVersion: "2026-07-28", capabilities: { tools: {} }, serverInfo: { name: "magnit-http-mcp", version: "0.3.1" } } });
+    return json({ jsonrpc: "2.0", id: body.id ?? null, result: { protocolVersion: "2026-07-28", capabilities: { tools: {} }, serverInfo: { name: "magnit-http-mcp", version: "0.3.2" } } });
   }
   if (body.method === "tools/list") {
     return json(toolsListResult(body.id ?? null));

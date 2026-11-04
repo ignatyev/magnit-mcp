@@ -10,6 +10,7 @@ const CART_URL = "https://magnit.ru/webgate/v1/carts/lite";
 const CART_PATH = "/webgate/v1/carts/lite";
 const MAX_DEBUG_JSON = 128_000;
 const HEADER_ALLOWLIST = new Set(["x-service", "x-store-code", "x-magnit-bff", "x-permissions-jwt"]);
+const SAFE_LOGIN_FAILURES = new Set(["setup_required", "adb_missing", "adb_command_failed", "adb_forward_failed", "chrome_debug_endpoint_unavailable", "chrome_target_create_failed", "chrome_target_invalid", "chrome_target_attach_failed", "chrome_tab_activate_failed", "cdp_connect_failed", "cdp_network_enable_failed", "login_unavailable"]);
 
 function safeContext(headers) {
   const normalized = Object.create(null);
@@ -87,13 +88,31 @@ export async function isMagnitAuthenticated(session, fetchImpl = fetch) {
 export function validateDebugWebSocket(raw, port, kind, expectedId = null) {
   try {
     const url = new URL(raw);
-    const pathOk = expectedId ? url.pathname === `/devtools/${kind}/${expectedId}` : new RegExp(`^/devtools/${kind}/[A-Za-z0-9-]+$`).test(url.pathname);
+    const pathOk = kind === "browser"
+      ? url.pathname === "/devtools/browser" || /^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(url.pathname)
+      : expectedId ? url.pathname === `/devtools/${kind}/${expectedId}` : new RegExp(`^/devtools/${kind}/[A-Za-z0-9-]+$`).test(url.pathname);
     return url.protocol === "ws:" && ["127.0.0.1", "localhost"].includes(url.hostname) && Number(url.port) === Number(port) && pathOk && !url.username && !url.password && !url.search && !url.hash;
   } catch { return false; }
 }
 
 function parseDevices(output) {
   return String(output).split(/\r?\n/).slice(1).map((line) => line.trim().split(/\s+/)).filter((fields) => fields.length >= 2).map(([serial, state]) => ({ serial, state }));
+}
+
+function publicLoginFailure(cause, stage) {
+  if (cause?.code === "cancelled") return { code: "cancelled", message: "Вход отменён." };
+  if (cause?.code === "setup_required") return { code: "setup_required", message: cause.publicMessage };
+  if (cause?.code === "ENOENT" && stage === "adb_devices") return { code: "adb_missing", message: "Команда ADB не найдена. В Termux установите android-tools: pkg install android-tools, затем выполните adb devices -l." };
+  if (stage === "adb_devices") return { code: "adb_command_failed", message: "ADB не смог проверить подключение. Проверьте беспроводную отладку, разрешение отладки на телефоне и вывод adb devices -l." };
+  if (stage === "adb_forward") return { code: "adb_forward_failed", message: "ADB не создал локальную связь с Chrome. Разблокируйте телефон, откройте Chrome и повторите вход." };
+  if (stage === "chrome_endpoint") return { code: "chrome_debug_endpoint_unavailable", message: "Chrome не открыл локальный DevTools endpoint. Убедитесь, что Chrome запущен и телефон разблокирован; обновление Chrome может помочь." };
+  if (stage === "chrome_target") return { code: "chrome_target_create_failed", message: "Chrome не смог открыть новую вкладку Магнит. Откройте Chrome вручную, разблокируйте телефон и попробуйте ещё раз." };
+  if (stage === "chrome_target_validation") return { code: "chrome_target_invalid", message: "Chrome вернул неизвестный ответ при создании вкладки. Ничего не сохранено; попробуйте обновить Chrome." };
+  if (stage === "chrome_attach") return { code: "chrome_target_attach_failed", message: "Chrome создал вкладку, но не дал подключиться к ней. Обновите Chrome и попробуйте ещё раз." };
+  if (stage === "chrome_activate") return { code: "chrome_tab_activate_failed", message: "Не удалось показать новую вкладку Chrome. Проверьте, что экран телефона включён и Chrome открыт." };
+  if (stage === "cdp_connect") return { code: "cdp_connect_failed", message: "Не удалось подключить локальный DevTools к Chrome. Оставьте телефон разблокированным и попробуйте ещё раз." };
+  if (stage === "cdp_enable") return { code: "cdp_network_enable_failed", message: "Chrome не включил наблюдение за запросом корзины. Проверьте версию Chrome и повторите вход." };
+  return { code: "login_unavailable", message: "Не удалось открыть защищённую вкладку Магнит. Проверьте Termux, ADB и Chrome; подробности запроса не сохранялись." };
 }
 
 async function readDebugText(response, maxBytes = MAX_DEBUG_JSON) {
@@ -140,7 +159,7 @@ class CdpClient extends EventEmitter {
         if (message.error) pending.reject(new Error("cdp_command_failed"));
         else pending.resolve(message.result);
       } else if (typeof message.method === "string") {
-        this.emit(message.method, message.params || {});
+        this.emit(message.method, message.params || {}, message.sessionId || null);
       }
     });
     ws.addEventListener("close", () => {
@@ -159,12 +178,12 @@ class CdpClient extends EventEmitter {
     } catch (cause) { try { ws.close(); } catch {} throw cause; }
     return new CdpClient(ws);
   }
-  send(method, params = {}, timeoutMs = 10_000) {
+  send(method, params = {}, timeoutMs = 10_000, sessionId = null) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("cdp_command_timeout")); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      try { this.ws.send(JSON.stringify({ id, method, params })); }
+      try { this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
       catch { clearTimeout(timer); this.pending.delete(id); reject(new Error("cdp_send_failed")); }
     });
   }
@@ -190,7 +209,7 @@ export class AndroidMagnitLogin {
   }
 
   snapshot() { return { ...this.state }; }
-  setState(status, message) { this.state = { status, message, updated_at: new Date().toISOString() }; }
+  setState(status, message) { const safeStatus = SAFE_LOGIN_FAILURES.has(status) || ["idle", "opening", "waiting", "verifying", "ready", "expired", "access_denied", "cancelled"].includes(status) ? status : "login_unavailable"; this.state = { status: safeStatus, message, updated_at: new Date().toISOString() }; }
 
   async start() {
     if (this.started) return this.startPromise || this.snapshot();
@@ -201,6 +220,7 @@ export class AndroidMagnitLogin {
 
   async open() {
     this.setState("opening", "Открываем новую вкладку Магнит на выбранном Android-телефоне…");
+    let stage = "adb_devices";
     try {
       const devices = parseDevices(await this.exec(["devices", "-l"]));
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
@@ -212,6 +232,7 @@ export class AndroidMagnitLogin {
         throw Object.assign(new Error("adb_device_unavailable"), { publicMessage: message, code: "setup_required" });
       }
       this.serial = selected.serial;
+      stage = "adb_forward";
       const forwarded = String(await this.exec(["-s", this.serial, "forward", "tcp:0", "localabstract:chrome_devtools_remote"])).trim();
       const portMatch = forwarded.match(/(?:^|\D)(\d{2,5})(?:\D|$)/);
       const port = portMatch ? Number(portMatch[1]) : NaN;
@@ -219,20 +240,29 @@ export class AndroidMagnitLogin {
       this.port = port;
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       const debugBase = `http://127.0.0.1:${port}`;
+      stage = "chrome_endpoint";
       const version = await responseJson(await this.fetchImpl(`${debugBase}/json/version`, { redirect: "error", signal: AbortSignal.timeout(5000) }));
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       if (!validateDebugWebSocket(version.webSocketDebuggerUrl, port, "browser")) throw new Error("debug_endpoint_invalid");
-      const created = await responseJson(await this.fetchImpl(`${debugBase}/json/new?${encodeURIComponent("https://magnit.ru/")}`, { method: "PUT", redirect: "error", signal: AbortSignal.timeout(5000) }));
-      if (typeof created.id !== "string" || !/^[A-Za-z0-9-]+$/.test(created.id) || created.url !== "https://magnit.ru/" || !validateDebugWebSocket(created.webSocketDebuggerUrl, port, "page", created.id)) throw new Error("debug_target_invalid");
-      this.targetId = created.id;
+      stage = "cdp_connect";
+      this.cdp = await CdpClient.connect(version.webSocketDebuggerUrl, this.WebSocketImpl);
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
-      const activated = await this.fetchImpl(`${debugBase}/json/activate/${encodeURIComponent(this.targetId)}`, { method: "GET", redirect: "error", signal: AbortSignal.timeout(5000) });
+      stage = "chrome_target";
+      const created = await this.cdp.send("Target.createTarget", { url: "https://magnit.ru/" });
+      stage = "chrome_target_validation";
+      if (typeof created?.targetId !== "string" || !/^[A-Za-z0-9-]+$/.test(created.targetId)) throw new Error("debug_target_invalid");
+      this.targetId = created.targetId;
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
-      if (!activated.ok) throw new Error("debug_activate_failed");
-      this.cdp = await CdpClient.connect(created.webSocketDebuggerUrl, this.WebSocketImpl);
+      stage = "chrome_attach";
+      const attached = await this.cdp.send("Target.attachToTarget", { targetId: this.targetId, flatten: true });
+      if (typeof attached?.sessionId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(attached.sessionId)) throw new Error("debug_session_invalid");
+      this.sessionId = attached.sessionId;
+      stage = "chrome_activate";
+      await this.cdp.send("Target.activateTarget", { targetId: this.targetId });
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
-      this.cdp.on("Network.requestWillBeSent", (params) => this.observeCartRequest(params));
-      await this.cdp.send("Network.enable");
+      this.cdp.on("Network.requestWillBeSent", (params, sessionId) => { if (sessionId === this.sessionId) this.observeCartRequest(params); });
+      stage = "cdp_enable";
+      await this.cdp.send("Network.enable", {}, 10_000, this.sessionId);
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       this.setState("waiting", "В открытой вкладке войдите в Магнит и откройте express-корзину. Код и пароль вводите только на сайте Магнит.");
       this.deadline = Date.now() + this.timeoutMs;
@@ -240,7 +270,7 @@ export class AndroidMagnitLogin {
       void this.pollCookies();
       return this.snapshot();
     } catch (cause) {
-      if (!this.cancelRequested) this.setState(cause?.code || "login_unavailable", cause?.publicMessage || "Не удалось открыть защищённую вкладку Магнит. Проверьте Termux, ADB и Chrome; подробности запроса не сохранялись.");
+      if (!this.cancelRequested) { const failure = publicLoginFailure(cause, stage); this.setState(failure.code, failure.message); }
       await this.cleanup();
       return this.snapshot();
     }
@@ -262,7 +292,7 @@ export class AndroidMagnitLogin {
     }
     this.polling=true;
     try {
-      const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] });
+      const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] }, 10_000, this.sessionId);
       if (this.closed) return;
       const cookie = magnitCookieHeader(result?.cookies);
       if (!cookie || !this.context || this.verifying) return;
@@ -316,11 +346,9 @@ export class AndroidMagnitLogin {
     clearInterval(this.timer);
     if (this.cleanupPromise) return this.cleanupPromise;
     const port=this.port;const targetId=this.targetId;const serial=this.serial;const cdp=this.cdp;
-    this.port=null;this.targetId=null;this.cdp=null;
+    this.port=null;this.targetId=null;this.cdp=null;this.sessionId=null;
     this.cleanupPromise=(async()=>{
-    if (port && targetId) {
-      try { await this.fetchImpl(`http://127.0.0.1:${port}/json/close/${encodeURIComponent(targetId)}`, { method: "GET", redirect: "error", signal: AbortSignal.timeout(3000) }); } catch {}
-    }
+    if (cdp && targetId) try { await cdp.send("Target.closeTarget", { targetId }, 3000); } catch {}
     cdp?.close();
     if (serial && port) {
       try { await this.exec(["-s", serial, "forward", "--remove", `tcp:${port}`]); } catch {}

@@ -35,6 +35,7 @@ const phoneSessions = createPhoneSessionCodec(OWNER_SECRET);
 const sessionStore = createEncryptedSessionStore({ secret: OWNER_SECRET, filename: process.env.SESSION_FILE || "./data/magnit-session.enc" });
 const HOST = process.env.HOST || (localOnly ? "127.0.0.1" : "0.0.0.0");
 if (localOnly && !["127.0.0.1", "localhost", "[::1]"].includes(HOST)) throw new Error("Loopback HTTP must bind only to loopback.");
+const LOCAL_OWNER_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`]);
 const COOKIE_SECURE = process.env.COOKIE_SECURE === undefined ? !localOnly : process.env.COOKIE_SECURE === "1";
 if (!COOKIE_SECURE && !localOnly) throw new Error("Insecure cookies are allowed only for loopback HTTP.");
 
@@ -70,7 +71,14 @@ const TOOLS = [{
   inputSchema: { type: "object", properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["express"] }, good_id: { type: "string", minLength: 1, maxLength: 128 }, offer_id: { type: "string", minLength: 1, maxLength: 128 }, quantity: { type: "integer", minimum: 1, maximum: 99 } }, required: ["store_code", "mode", "good_id", "offer_id", "quantity"], additionalProperties: false },
 }];
 
-function originMatches(req) { return req.headers.origin === new URL(PUBLIC_BASE_URL).origin && (!req.headers["sec-fetch-site"] || req.headers["sec-fetch-site"] === "same-origin"); }
+function originMatches(req) {
+  if (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "same-origin") return false;
+  if (!localOnly) return req.headers.origin === publicUrl.origin;
+  const host = String(req.headers.host || "").toLowerCase();
+  if (!LOCAL_OWNER_HOSTS.has(host)) return false;
+  try { const origin = new URL(req.headers.origin); return origin.origin === `http://${host}` && !origin.username && !origin.password && origin.pathname === "/" && !origin.search && !origin.hash; }
+  catch { return false; }
+}
 function writeJson(res, status, body, extra = {}) { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...extra }); res.end(JSON.stringify(body)); }
 function error(res, status = 400, message = "Не удалось выполнить запрос.") { writeJson(res, status, { error: message }); }
 async function readJson(req, maxBytes = MAX_BODY_BYTES) { let size=0;const chunks=[];for await(const chunk of req){size+=chunk.length;if(size>maxBytes)throw Error("large");chunks.push(chunk)}return chunks.length?JSON.parse(Buffer.concat(chunks).toString("utf8")):{}; }
@@ -91,7 +99,7 @@ async function handleMcp(req,res){
   if(!params||typeof params!=="object"||Array.isArray(params))return writeJson(res,400,rpcError(id,-32602,"Invalid params"));
   if(body.method==="notifications/initialized")return res.writeHead(202,{"Cache-Control":"no-store"}).end();
   if(body.method==="server/discover")return writeJson(res,200,rpc(id,{supportedVersions:["2026-07-28"],capabilities:{tools:{}}}));
-  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.1"}}));
+  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.2"}}));
   if(body.method==="tools/list")return writeJson(res,200,rpc(id,{tools:TOOLS}));
   if(body.method==="ping")return writeJson(res,200,rpc(id,{}));
   if(body.method!=="tools/call")return writeJson(res,200,rpcError(id,-32601,"Method not found"));
@@ -190,7 +198,7 @@ async function handlePhone(req,res,url){
   return error(res,404,"Страница не найдена.");
 }
 
-const server=createServer(async(req,res)=>{try{const url=new URL(req.url||"/",PUBLIC_BASE_URL);const isMcpPost=req.method==="POST"&&url.pathname==="/mcp";if((!localOnly||!isMcpPost)&&String(req.headers.host||"").toLowerCase()!==publicUrl.host.toLowerCase())return error(res,403,"Недопустимый Host.");if(localOnly&&!isMcpPost&&!isDirectLocalOwnerRequest(req,publicUrl.host))return error(res,403,"Локальный доступ разрешён только с этого устройства.");if(process.env.TRUST_PROXY==="1"&&req.headers["x-forwarded-proto"]!=="https")return error(res,400,"Нужен HTTPS.");if(isMcpPost)return await handleMcp(req,res);await handlePhone(req,res,url)}catch{if(!res.headersSent)error(res,500,"Не удалось выполнить запрос.");else res.destroy()}});
+const server=createServer(async(req,res)=>{try{const url=new URL(req.url||"/",PUBLIC_BASE_URL);const isMcpPost=req.method==="POST"&&url.pathname==="/mcp";if(!localOnly&&String(req.headers.host||"").toLowerCase()!==publicUrl.host.toLowerCase())return error(res,403,"Недопустимый Host.");if(localOnly&&!isMcpPost&&!isDirectLocalOwnerRequest(req,LOCAL_OWNER_HOSTS))return error(res,403,"Локальный доступ разрешён только с этого устройства.");if(process.env.TRUST_PROXY==="1"&&req.headers["x-forwarded-proto"]!=="https")return error(res,400,"Нужен HTTPS.");if(isMcpPost)return await handleMcp(req,res);await handlePhone(req,res,url)}catch{if(!res.headersSent)error(res,500,"Не удалось выполнить запрос.");else res.destroy()}});
 server.listen(PORT,HOST);
 let shuttingDown=false;
 async function shutdown(){if(shuttingDown)return;shuttingDown=true;try{await androidLogin?.cancel()}finally{server.close(()=>process.exit(0))}}
