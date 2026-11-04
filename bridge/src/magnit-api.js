@@ -1,4 +1,6 @@
 export const MAGNIT_SEARCH_URL = "https://magnit.ru/webgate/v2/goods/search";
+const PRODUCT_DETAIL_BASE = "https://magnit.ru/webgate/v2/goods";
+const detailCache = new Map();
 export function magnitCategoriesUrl(storeCode, mode) {
   const code = validateStoreCode(storeCode);
   const { storeType, catalogType } = catalogMode(mode);
@@ -77,6 +79,8 @@ export function parseProducts(payload) {
       quantity: quantity != null && Number.isFinite(quantity) ? quantity : null,
       min_order_quantity: minOrder,
       order_step_quantity: orderStep,
+      weighted: item?.weighted && typeof item.weighted === "object" ? { is_weighted: typeof item.weighted.isWeighted === "boolean" ? item.weighted.isWeighted : null, shelf_weight: item.weighted.shelfWeight != null && Number.isFinite(Number(item.weighted.shelfWeight)) ? Number(item.weighted.shelfWeight) : null, unit_price_raw: Number.isSafeInteger(item.weighted.unitPrice) ? item.weighted.unitPrice : null } : null,
+      increment: item?.increment && typeof item.increment === "object" ? { unit: cleanText(item.increment.unit, 40) || null, value: item.increment.value != null && Number.isFinite(Number(item.increment.value)) ? Number(item.increment.value) : null } : null,
       cart_addable: cartAddable,
       cart_add_rule: cartAddable ? addRule : null,
       good_id: cartAddable ? productId : null,
@@ -143,4 +147,58 @@ export async function getMagnitCategories({ storeCode, mode = "delivery", fetchI
   const data = await magnitRequest(url, { method: "GET", headers: { Accept: "application/json", Referer: "https://magnit.ru/" } }, fetchImpl, timeoutMs);
   if (!Array.isArray(data?.items)) throw new MagnitApiError("invalid_response", "Magnit returned an unexpected categories response.");
   return { store_code: validateStoreCode(storeCode), mode, categories: data.items.slice(0, 100).map((item) => ({ id: String(item?.id ?? "").slice(0, 48), name: cleanText(item?.name, 120), children: Array.isArray(item?.children) ? item.children.slice(0, 50).map((child) => ({ id: String(child?.id ?? "").slice(0, 48), name: cleanText(child?.name, 120) })) : [] })).filter((item) => item.id && item.name) };
+}
+
+function cleanDetail(value, max = 180) { return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max); }
+
+export async function getMagnitProductDetails({ productId, storeCode, mode = "express", fetchImpl = fetch, timeoutMs = 15_000 }) {
+  if (typeof productId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(productId)) throw new MagnitApiError("invalid_arguments", "product_id должен быть явным идентификатором из каталога.");
+  const code = validateStoreCode(storeCode);
+  if (mode !== "express") throw new MagnitApiError("unsupported_mode", "Подробности товара поддерживаются только для режима express.");
+  const cacheKey = `${code}\0${productId}`;
+  const cached = detailCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return { ...cached.value, source: "magnit_http_cache", fetched_at: cached.fetchedAt };
+  detailCache.delete(cacheKey);
+  const url = new URL(`${PRODUCT_DETAIL_BASE}/${encodeURIComponent(productId)}/stores/${encodeURIComponent(code)}`);
+  url.searchParams.set("storetype", "express");
+  url.searchParams.set("catalogtype", "2");
+  const item = await magnitRequest(url.href, { method: "GET", headers: { Accept: "application/json", Referer: "https://magnit.ru/" } }, fetchImpl, timeoutMs);
+  if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.id !== "string" || item.id !== productId) throw new MagnitApiError("invalid_response", "Магнит вернул несовпадающие сведения о товаре.");
+  const price = Number.isSafeInteger(item.price) && item.price >= 0 ? item.price : null;
+  const quantity = item.quantity == null ? null : Number.isFinite(Number(item.quantity)) ? Number(item.quantity) : null;
+  const detailList = Array.isArray(item.details) ? item.details.slice(0, 30).map((detail) => ({
+    name: cleanDetail(detail?.name, 80),
+    type: cleanDetail(detail?.type, 40),
+    value: cleanDetail(detail?.value, 140),
+    parameters: Array.isArray(detail?.parameters) ? detail.parameters.slice(0, 8).map((param) => ({ name: cleanDetail(param?.name, 60), value: cleanDetail(param?.value, 100) })).filter((param) => param.name || param.value) : [],
+  })).filter((detail) => detail.name || detail.value || detail.parameters.length) : [];
+  const weighted = item.weighted && typeof item.weighted === "object" ? {
+    is_weighted: typeof item.weighted.isWeighted === "boolean" ? item.weighted.isWeighted : null,
+    shelf_weight: item.weighted.shelfWeight != null && Number.isFinite(Number(item.weighted.shelfWeight)) ? Number(item.weighted.shelfWeight) : null,
+    unit_price_raw: Number.isSafeInteger(item.weighted.unitPrice) ? item.weighted.unitPrice : null,
+    unit: cleanDetail(item.weighted.unit, 40) || null,
+  } : null;
+  const result = {
+    product_id: productId,
+    store_code: code,
+    mode: "express",
+    name: cleanDetail(item.name, 180),
+    price_kopecks: price,
+    price_rubles: price === null ? null : price / 100,
+    quantity: quantity,
+    stock: quantity == null ? "unknown" : quantity > 0 ? "available" : "unavailable",
+    weighted,
+    increment: item.increment && typeof item.increment === "object" ? { unit: cleanDetail(item.increment.unit, 40) || null, value: item.increment.value != null && Number.isFinite(Number(item.increment.value)) ? Number(item.increment.value) : null } : null,
+    order_properties: item.orderProperties && typeof item.orderProperties === "object" ? {
+      min_order_quantity: Number.isSafeInteger(item.orderProperties.minOrderQuantity) ? item.orderProperties.minOrderQuantity : null,
+      order_step_quantity: Number.isSafeInteger(item.orderProperties.orderStepQuantity) ? item.orderProperties.orderStepQuantity : null,
+    } : { min_order_quantity: null, order_step_quantity: null },
+    restrictions: Object.fromEntries(["isAdditionalActionRequired", "isBiometryRequired", "isForAdults", "needPassport", "pickupOnly"].map((key) => [key, typeof item[key] === "boolean" ? item[key] : null])),
+    details: detailList,
+    source: "magnit_http_unverified",
+    fetched_at: new Date().toISOString(),
+  };
+  detailCache.set(cacheKey, { value: result, fetchedAt: result.fetched_at, expires: Date.now() + 5 * 60_000 });
+  while (detailCache.size > 500) detailCache.delete(detailCache.keys().next().value);
+  return result;
 }

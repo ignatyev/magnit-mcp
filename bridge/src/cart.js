@@ -1,4 +1,5 @@
 import { MagnitApiError, validateStoreCode } from "./magnit-api.js";
+import { createHash } from "node:crypto";
 
 const CART_URL = "https://magnit.ru/webgate/v1/carts/lite";
 const MAX_CART_BYTES = 1_000_000;
@@ -105,6 +106,8 @@ function cartView(data, context) {
     good_id: typeof item?.goodId === "string" ? item.goodId.slice(0, 128) : null,
     offer_id: typeof item?.offerId === "string" ? item.offerId.slice(0, 128) : null,
     quantity: Number.isSafeInteger(item?.qnty) ? item.qnty : null,
+    quantity_increment: item?.increment && typeof item.increment === "object" ? { unit: typeof item.increment.unit === "string" ? item.increment.unit.slice(0, 40) : null, value: Number.isFinite(item.increment.value) ? item.increment.value : null } : null,
+    catalog_price_raw: Number.isSafeInteger(item?.catalogPrice) ? item.catalogPrice : null,
   }));
   return {
     store_code: context.storeCode,
@@ -122,23 +125,25 @@ function cartView(data, context) {
   };
 }
 
-export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {} }) {
+export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore = null }) {
   const active = requireSession(session, storeCode, mode);
   return serializeCartOperation(async () => {
     const data = await cartRequest(active, "GET", null, fetchImpl, timeoutMs);
     const view = cartView(data, active.context);
     reconciliationRequired = false;
+    if (operationStore) await operationStore.reconcile({ sessionFingerprint: operationStore.fingerprint(active.cookie), storeCode: active.context.storeCode, cartSummary: { item_count: view.items.length, request_store_code: view.request_store_code } });
     if (active.cartReconciliationRequired) await saveSession({ ...active, cartReconciliationRequired: false });
     return view;
   });
 }
 
-export async function addMagnitCartItem({ session, storeCode, mode, goodId, offerId, quantity, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {} }) {
+export async function addMagnitCartItem({ session, storeCode, mode, goodId, offerId, quantity, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore = null }) {
   const active = requireSession(session, storeCode, mode);
   if (typeof goodId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(goodId)) throw new Error("good_id должен быть явным идентификатором товара.");
   if (typeof offerId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(offerId)) throw new Error("offer_id должен быть явным идентификатором предложения.");
   if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("quantity должен быть целым числом от 1 до 99.");
   const operation = async () => {
+    if (operationStore) await operationStore.assertWritable({ sessionFingerprint: operationStore.fingerprint(active.cookie), storeCode: active.context.storeCode });
     if (reconciliationRequired || active.cartReconciliationRequired) throw new MagnitApiError("cart_reconciliation_required", "После неопределённого изменения сначала вызовите magnit_view_cart; добавление остановлено.");
     const before = await cartRequest(active, "GET", null, fetchImpl, timeoutMs);
     if (!Array.isArray(before?.items) || before.items.length > 250) throw new MagnitApiError("invalid_response", "Невозможно безопасно сохранить состав корзины.");
@@ -203,6 +208,85 @@ export async function addMagnitCartItem({ session, storeCode, mode, goodId, offe
     return { ...result, mutation: "added_and_verified", verified_quantity: nextQuantity };
   };
   return serializeCartOperation(operation);
+}
+
+function normalizeCartOperations(operations) {
+  if (!Array.isArray(operations) || operations.length < 1 || operations.length > 50) throw new MagnitApiError("invalid_arguments", "operations должен содержать от 1 до 50 изменений.");
+  const seen = new Set();
+  return operations.map((op) => {
+    if (!op || typeof op !== "object" || Array.isArray(op) || !["add", "set", "remove"].includes(op.action)) throw new MagnitApiError("invalid_arguments", "У каждого изменения должно быть action add, set или remove.");
+    if (typeof op.good_id !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(op.good_id) || typeof op.offer_id !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(op.offer_id)) throw new MagnitApiError("invalid_arguments", "Для каждого изменения нужны точные good_id и offer_id.");
+    const key = `${op.good_id}\0${op.offer_id}`;
+    if (seen.has(key)) throw new MagnitApiError("invalid_arguments", "В одном пакете нельзя повторять одну позицию.");
+    seen.add(key);
+    if (op.action === "remove") {
+      if (op.quantity !== undefined) throw new MagnitApiError("invalid_arguments", "Для remove не передавайте quantity.");
+      return { action: op.action, good_id: op.good_id, offer_id: op.offer_id };
+    }
+    if (!Number.isSafeInteger(op.quantity) || op.quantity < 1 || op.quantity > 99) throw new MagnitApiError("invalid_arguments", "Количество для add/set должно быть целым числом от 1 до 99.");
+    return { action: op.action, good_id: op.good_id, offer_id: op.offer_id, quantity: op.quantity };
+  });
+}
+
+export async function applyMagnitCart({ session, storeCode, mode, requestId, operations, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore, requireEligible = async () => {} }) {
+  const active = requireSession(session, storeCode, mode);
+  if (!operationStore) throw new MagnitApiError("idempotency_unavailable", "Защищённое состояние пакетной операции не настроено.");
+  if (typeof requestId !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(requestId)) throw new MagnitApiError("invalid_arguments", "request_id должен содержать 8–128 допустимых символов.");
+  const normalized = normalizeCartOperations(operations);
+  const fingerprint = operationStore.fingerprint(active.cookie);
+  const payloadHash = createHash("sha256").update(JSON.stringify({ store_code: validateStoreCode(storeCode), mode, operations: normalized })).digest("hex");
+  return serializeCartOperation(async () => {
+    const previous = await operationStore.inspect({ requestId, sessionFingerprint: fingerprint, payloadHash });
+    if (previous.replay) return { request_id: requestId, replayed: true, replay_status: previous.status, historical_result: previous.result, verified_at: previous.verifiedAt, current_cart: false };
+    await operationStore.assertWritable({ sessionFingerprint: fingerprint, storeCode: active.context.storeCode });
+    if (reconciliationRequired || active.cartReconciliationRequired) throw new MagnitApiError("cart_reconciliation_required", "После неопределённого изменения сначала явно перечитайте корзину.");
+    for (const op of normalized) if (op.action !== "remove") await requireEligible(storeCode, op.good_id, op.offer_id, op.action);
+    const before = await cartRequest(active, "GET", null, fetchImpl, timeoutMs);
+    cartView(before, active.context);
+    if (!Array.isArray(before.items) || before.items.length > 250) throw new MagnitApiError("invalid_response", "Невозможно безопасно сохранить состав корзины.");
+    let formatStoreCode = null;
+    if (before.formats.length === 1) {
+      try { formatStoreCode = validateStoreCode(String(before.formats[0]?.storeCode ?? "")); } catch { throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не содержит допустимый код магазина."); }
+    } else if (!(before.items.length === 0 && before.formats.length === 0)) throw new MagnitApiError("cart_format_ambiguous", "Корзина содержит неизвестное число форматов.");
+    const items = new Map();
+    for (const item of before.items) {
+      if (typeof item?.goodId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(item.goodId) || typeof item?.offerId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(item.offerId) || !Number.isSafeInteger(item?.qnty) || item.qnty < 1) throw new MagnitApiError("cart_item_shape_unverified", "В корзине есть позиция с неизвестным ID или количеством; пакет остановлен.");
+      if ((item.goodStoreCode != null && String(item.goodStoreCode) !== formatStoreCode) || (item.goodService != null && String(item.goodService) !== active.context.service)) throw new MagnitApiError("cart_context_ambiguous", "В корзине обнаружен другой магазин или сервис.");
+      const key = keyFor(item.goodId, item.offerId);
+      if (items.has(key)) throw new MagnitApiError("cart_duplicate_item_ambiguous", "В корзине есть повторяющиеся ID; пакет остановлен.");
+      items.set(key, { goodId: item.goodId, offerId: item.offerId, qnty: item.qnty });
+    }
+    for (const op of normalized) {
+      const key = keyFor(op.good_id, op.offer_id), current = items.get(key);
+      if (op.action === "add") {
+        const qnty = (current?.qnty || 0) + op.quantity;
+        if (!Number.isSafeInteger(qnty) || qnty > 999) throw new MagnitApiError("invalid_arguments", "Итоговое количество позиции превышает допустимый предел.");
+        items.set(key, { goodId: op.good_id, offerId: op.offer_id, qnty });
+      } else if (op.action === "set") {
+        if (!current) throw new MagnitApiError("cart_item_not_found", "Нельзя задать количество: такой позиции нет в текущей корзине.");
+        items.set(key, { ...current, qnty: op.quantity });
+      } else {
+        if (!current) throw new MagnitApiError("cart_item_not_found", "Нельзя удалить: такой позиции нет в текущей корзине.");
+        items.delete(key);
+      }
+    }
+    const expectedItems = [...items.values()];
+    if (expectedItems.length > 250) throw new MagnitApiError("cart_limit_exceeded", "Пакет превысит безопасный предел позиций корзины.");
+    await operationStore.begin({ requestId, sessionFingerprint: fingerprint, payloadHash, storeCode: active.context.storeCode });
+    let after;
+    try { after = await cartRequest(active, "PUT", { items: expectedItems }, fetchImpl, timeoutMs); }
+    catch (cause) { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw cause; }
+    let result;
+    try { result = cartView(after, active.context); }
+    catch { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw new MagnitApiError("ambiguous_result", "Ответ не подтвердил контекст корзины. Перечитайте корзину перед следующим изменением."); }
+    const actual = new Map(result.items.filter((item) => item.good_id && item.offer_id && item.quantity !== null).map((item) => [keyFor(item.good_id, item.offer_id), item.quantity]));
+    const verified = actual.size === expectedItems.length && result.items.length === expectedItems.length && expectedItems.every((item) => actual.get(keyFor(item.goodId, item.offerId)) === item.qnty) && (!formatStoreCode || result.items.length === 0 || result.cart_store_code === formatStoreCode);
+    if (!verified) { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw new MagnitApiError("ambiguous_result", "Магнит не подтвердил все позиции; перечитайте корзину перед следующим изменением."); }
+    const summary = { store_code: result.request_store_code, cart_store_code: result.cart_store_code, item_count: result.items.length, verified_actions: normalized.map((op) => ({ action: op.action, good_id: op.good_id, offer_id: op.offer_id, quantity: op.action === "remove" ? null : items.get(keyFor(op.good_id, op.offer_id))?.qnty ?? null })), mutation: "applied_and_verified", verified_at: new Date().toISOString() };
+    try { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "complete", result: summary }); }
+    catch { throw new MagnitApiError("cart_reconciliation_required", "Корзина обновилась, но квитанцию операции сохранить не удалось. Перечитайте корзину; тот же request_id повторно не применится."); }
+    return { ...result, request_id: requestId, replayed: false, ...summary };
+  });
 }
 
 function keyFor(goodId, offerId) { return `${goodId}\0${offerId}`; }

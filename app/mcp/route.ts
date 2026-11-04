@@ -3,7 +3,7 @@ import { forwardMcp, getBridgeSetupStatus, setupRequiredResult, toolsListResult 
 
 export const dynamic = "force-dynamic";
 
-const MAX_REQUEST_BYTES = 16_384;
+const MAX_REQUEST_BYTES = 64_000;
 
 function json(body: unknown, status = 200) {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     return json({ jsonrpc: "2.0", id: body.id ?? null, result: { supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } });
   }
   if (body.method === "initialize") {
-    return json({ jsonrpc: "2.0", id: body.id ?? null, result: { protocolVersion: "2026-07-28", capabilities: { tools: {} }, serverInfo: { name: "magnit-http-mcp", version: "0.3.4" } } });
+    return json({ jsonrpc: "2.0", id: body.id ?? null, result: { protocolVersion: "2026-07-28", capabilities: { tools: {} }, serverInfo: { name: "magnit-http-mcp", version: "0.4.0" } } });
   }
   if (body.method === "tools/list") {
     return json(toolsListResult(body.id ?? null));
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     if (!setup.urlReady) return json(setupRequiredResult(body.id ?? null, "HTTP MCP-сервис ещё не настроен. Запустите bridge и задайте MCP_BRIDGE_URL в runtime secrets Site."));
     if (!setup.tokenReady) return json(setupRequiredResult(body.id ?? null, "Не задан секрет MCP_BRIDGE_TOKEN в runtime secrets Site."));
     const params = body.params || {};
-    if (typeof params.name !== "string" || !["magnit_status", "magnit_search_products", "magnit_list_categories", "magnit_view_cart", "magnit_add_to_cart"].includes(params.name)) {
+    if (typeof params.name !== "string" || !["magnit_status", "magnit_search_products", "magnit_list_categories", "magnit_view_cart", "magnit_add_to_cart", "magnit_get_shopping_context", "magnit_get_product_details", "magnit_apply_cart", "magnit_get_order_history"].includes(params.name)) {
       return json({ jsonrpc: "2.0", id: body.id ?? null, result: { isError: true, content: [{ type: "text", text: "Инструмент не поддерживается." }] } });
     }
     try {

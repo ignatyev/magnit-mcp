@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { constantTimeEqual, createPhoneSessionCodec } from "./policy.js";
-import { getMagnitCategories, MagnitApiError, searchMagnit, validateStoreCode } from "./magnit-api.js";
-import { addMagnitCartItem, viewMagnitCart } from "./cart.js";
+import { getMagnitCategories, getMagnitProductDetails, MagnitApiError, searchMagnit, validateStoreCode } from "./magnit-api.js";
+import { addMagnitCartItem, applyMagnitCart, viewMagnitCart } from "./cart.js";
 import { bindExpressSearchContext, createEncryptedSessionStore, extractMagnitSessionFromHar, publicSessionState } from "./session-store.js";
+import { createCartOperationStore } from "./cart-operation-store.js";
+import { getMagnitOrderHistory, getMagnitShoppingContext } from "./shopping-context.js";
 import { createAndroidLogin, isMagnitAuthenticated } from "./android-login.js";
 import { PHONE_HTML } from "./phone-page.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
@@ -15,7 +17,7 @@ const MCP_BEARER_TOKEN = process.env.MCP_BEARER_TOKEN || "";
 const LEGACY_PHONE_ACCESS_SECRET = process.env.PHONE_ACCESS_SECRET || "";
 const OWNER_KEY_FILE = process.env.OWNER_KEY_FILE || "./data/owner-key";
 const COOKIE_NAME = "magnit_phone_session";
-const MAX_BODY_BYTES = 16_384;
+const MAX_BODY_BYTES = 64_000;
 const MAX_HAR_BYTES = 12 * 1024 * 1024;
 const rateBuckets = new Map();
 let androidLogin = null;
@@ -33,6 +35,7 @@ const OWNER_SECRET = localOnly
   : LEGACY_PHONE_ACCESS_SECRET;
 const phoneSessions = createPhoneSessionCodec(OWNER_SECRET);
 const sessionStore = createEncryptedSessionStore({ secret: OWNER_SECRET, filename: process.env.SESSION_FILE || "./data/magnit-session.enc" });
+const cartOperationStore = createCartOperationStore({ secret: OWNER_SECRET, filename: process.env.CART_OPERATIONS_FILE || "./data/cart-operations.enc" });
 const HOST = process.env.HOST || (localOnly ? "127.0.0.1" : "0.0.0.0");
 if (localOnly && !["127.0.0.1", "localhost", "[::1]"].includes(HOST)) throw new Error("Loopback HTTP must bind only to loopback.");
 const LOCAL_OWNER_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`]);
@@ -69,6 +72,22 @@ const TOOLS = [{
   name: "magnit_add_to_cart",
   description: "Добавить товар только по good_id/offer_id, выданным недавним поиском и прошедшим ограниченную express-проверку. Сохраняет остальные позиции; автоматических повторов нет.",
   inputSchema: { type: "object", properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["express"] }, good_id: { type: "string", minLength: 1, maxLength: 128 }, offer_id: { type: "string", minLength: 1, maxLength: 128 }, quantity: { type: "integer", minimum: 1, maximum: 99 } }, required: ["store_code", "mode", "good_id", "offer_id", "quantity"], additionalProperties: false },
+}, {
+  name: "magnit_get_shopping_context",
+  description: "Получить активный адрес аккаунта (без квартиры/домофона/подъезда/этажа) и сохранённый код магазина. Активный адрес не сопоставляется магазину; источник HTTP не проверен live.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+}, {
+  name: "magnit_get_product_details",
+  description: "Прочитать сведения о товаре по точному product_id и коду магазина; цены, остатки, вес, шаг и ограничения возвращаются как данные источника, неизвестные единицы не пересчитываются.",
+  inputSchema: { type: "object", properties: { product_id: { type: "string", minLength: 1, maxLength: 128 }, store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["express"] } }, required: ["product_id", "store_code", "mode"], additionalProperties: false },
+}, {
+  name: "magnit_apply_cart",
+  description: "Одним запросом применить 1–50 add/set/remove к express-корзине. Каждый ID должен быть из недавнего проверенного поиска; нужен уникальный request_id для идемпотентности. Сохраняет неуказанные позиции, сверяет весь ответ; после неопределённого результата сначала явно перечитайте корзину. Checkout не выполняется.",
+  inputSchema: { type: "object", properties: { store_code: { type: "string", pattern: "^[0-9]{4,8}$" }, mode: { type: "string", enum: ["express"] }, request_id: { type: "string", minLength: 8, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }, operations: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", properties: { action: { type: "string", enum: ["add", "set", "remove"] }, good_id: { type: "string", minLength: 1, maxLength: 128 }, offer_id: { type: "string", minLength: 1, maxLength: 128 }, quantity: { type: "integer", minimum: 1, maximum: 99 } }, required: ["action", "good_id", "offer_id"], additionalProperties: false } } }, required: ["store_code", "mode", "request_id", "operations"], additionalProperties: false },
+}, {
+  name: "magnit_get_order_history",
+  description: "Прочитать историю заказов. Адреса и платежные ссылки исключены; артикулы товара в заказе справочные и не являются cart ID.",
+  inputSchema: { type: "object", properties: { page: { type: "integer", minimum: 1, maximum: 100, default: 1 }, limit: { type: "integer", minimum: 1, maximum: 30, default: 10 } }, additionalProperties: false },
 }];
 
 function originMatches(req) {
@@ -89,6 +108,13 @@ function cookie(res,value,maxAge) {const parts=[`${COOKIE_NAME}=${value}`,"Path=
 function requirePhone(req,res){if(!originMatches(req)){error(res,403,"Обновите страницу и попробуйте ещё раз.");return null}const session=readSession(req);if(!session){error(res,401,localOnly?"Обновите страницу для локального входа.":"Введите пароль доступа.");return null}if(!constantTimeEqual(req.headers["x-csrf-token"],session.csrf)){error(res,403,"Обновите страницу и попробуйте ещё раз.");return null}return session}
 function phonePage(){return localOnly?PHONE_HTML.replace(/<section id="gate"[\s\S]*?<\/section>/," ").replace('<button id="logout" class="soft">Выход</button>',"").replace("<body>","<body class=\"local-owner\">"):PHONE_HTML}
 async function bindSearchStore(storeCode){const saved=await sessionStore.load();if(!saved?.cookie)return;if(saved.context?.service==="express"&&saved.context.storeCode===storeCode&&saved.context.bff==="1")return;await sessionStore.save(bindExpressSearchContext(saved,storeCode))}
+async function productDetailsWithCartRule(productId,storeCode,mode){const detail=await getMagnitProductDetails({productId,storeCode,mode});const mapping=eligibleCartItems.cartMappingFor(storeCode,productId);const restricted=detail.weighted?.is_weighted===true||Object.values(detail.restrictions||{}).some((value)=>value===true);const allowed=!!mapping&&!restricted;return {...detail,good_id:allowed?mapping.good_id:null,offer_id:allowed?mapping.offer_id:null,cart_addable:allowed,cart_add_rule:allowed?mapping.cart_add_rule:null,cart_add_reason:allowed?null:restricted?"details_show_restriction":"needs_recent_verified_search"}}
+async function enrichCart(view){
+  const details=new Map();let denied=false;const candidates=view.items.filter((item)=>item.good_id&&!eligibleCartItems.metadataFor(view.request_store_code,item.good_id,item.offer_id)).slice(0,10);let index=0;
+  async function worker(){while(index<candidates.length&&!denied){const item=candidates[index++];try{const detail=await getMagnitProductDetails({productId:item.good_id,storeCode:view.cart_store_code||view.request_store_code,mode:"express",timeoutMs:5_000});details.set(item.good_id,detail)}catch(cause){const code=cause instanceof MagnitApiError?cause.code:"details_unavailable";details.set(item.good_id,{error:code});if(code==="access_restricted")denied=true}}}
+  await Promise.all([worker(),worker()]);
+  return {...view,items:view.items.map((item)=>{const cached=eligibleCartItems.metadataFor(view.request_store_code,item.good_id,item.offer_id);const detail=details.get(item.good_id);const metadata=cached||detail;return {...item,name:metadata?.name||null,catalog_price_kopecks:metadata?.price_kopecks??null,catalog_price_rubles:metadata?.price_rubles??null,stock_quantity:metadata?.quantity??null,availability:metadata?.in_stock==null?(detail?.stock||"unknown"):metadata.in_stock?"available":"unavailable",minimum_quantity:metadata?.min_order_quantity??metadata?.order_properties?.min_order_quantity??null,order_step_quantity:metadata?.order_step_quantity??metadata?.order_properties?.order_step_quantity??null,catalog_increment:metadata?.increment??null,catalog_weighted:metadata?.weighted??null,metadata_store_code:cached?view.request_store_code:(detail&&!detail.error?(view.cart_store_code||view.request_store_code):null),metadata_source:cached?"recent_express_search_cache":detail&&!detail.error?"product_details_http":"unavailable",metadata_error:detail?.error||null,metadata_fetched_at:metadata?.fetched_at??null,quantity_unit_note:item.quantity_increment?.unit?"source increment; compare with item quantity":"unit unknown"}}),source:"magnit_cart_http_unverified",fetched_at:new Date().toISOString()}}
+
 function rpc(id,result){return {jsonrpc:"2.0",id,result}}
 function rpcError(id,code,message){return {jsonrpc:"2.0",id,error:{code,message}}}
 async function handleMcp(req,res){
@@ -100,25 +126,30 @@ async function handleMcp(req,res){
   if(!params||typeof params!=="object"||Array.isArray(params))return writeJson(res,400,rpcError(id,-32602,"Invalid params"));
   if(body.method==="notifications/initialized")return res.writeHead(202,{"Cache-Control":"no-store"}).end();
   if(body.method==="server/discover")return writeJson(res,200,rpc(id,{supportedVersions:["2026-07-28"],capabilities:{tools:{}}}));
-  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.3.4"}}));
+  if(body.method==="initialize")return writeJson(res,200,rpc(id,{protocolVersion:"2026-07-28",capabilities:{tools:{}},serverInfo:{name:"magnit-http-mcp",version:"0.4.0"}}));
   if(body.method==="tools/list")return writeJson(res,200,rpc(id,{tools:TOOLS}));
   if(body.method==="ping")return writeJson(res,200,rpc(id,{}));
   if(body.method!=="tools/call")return writeJson(res,200,rpcError(id,-32601,"Method not found"));
   if(params.name==="magnit_status"){
     const saved = await sessionStore.load();
-    return writeJson(res,200,rpc(id,{content:[{type:"text",text:JSON.stringify({service:"ready",capabilities:["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart"],login_capability:"owner_android_chrome_manual",phone_login_url:PUBLIC_BASE_URL,auth_session:publicSessionState(saved),live_compatibility:"unverified",unsupported:["automated_login","sms_entry","captcha_solving","checkout","order","payment"]})}]}));
+    return writeJson(res,200,rpc(id,{content:[{type:"text",text:JSON.stringify({service:"ready",capabilities:["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart","magnit_get_shopping_context","magnit_get_product_details","magnit_apply_cart","magnit_get_order_history"],login_capability:"owner_android_chrome_manual",phone_login_url:PUBLIC_BASE_URL,auth_session:publicSessionState(saved),live_compatibility:"unverified",unsupported:["automated_login","sms_entry","captcha_solving","checkout","payment"]})}]}));
   }
-  if(!["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart"].includes(params.name))return writeJson(res,200,rpc(id,{isError:true,content:[{type:"text",text:"Инструмент не поддерживается."}]}));
+  if(!["magnit_search_products","magnit_list_categories","magnit_view_cart","magnit_add_to_cart","magnit_get_shopping_context","magnit_get_product_details","magnit_apply_cart","magnit_get_order_history"].includes(params.name))return writeJson(res,200,rpc(id,{isError:true,content:[{type:"text",text:"Инструмент не поддерживается."}]}));
   const args=params.arguments??{};if(!args||typeof args!=="object"||Array.isArray(args))return writeJson(res,200,rpcError(id,-32602,"Invalid params"));
   try{
     let result;
     if(params.name==="magnit_search_products") {result=await searchMagnit({query:args.query,storeCode:args.store_code,mode:args.mode,limit:args.limit??20});eligibleCartItems.remember(result);if(args.mode==="express")await bindSearchStore(args.store_code)}
     else if(params.name==="magnit_list_categories") result=await getMagnitCategories({storeCode:args.store_code,mode:args.mode});
+    else if(params.name==="magnit_get_shopping_context") result=await getMagnitShoppingContext({session:await sessionStore.load()});
+    else if(params.name==="magnit_get_order_history") result=await getMagnitOrderHistory({session:await sessionStore.load(),page:args.page??1,limit:args.limit??10});
+    else if(params.name==="magnit_get_product_details") result=await productDetailsWithCartRule(args.product_id,args.store_code,args.mode);
     else {
       const saved=await sessionStore.load();
       result=params.name==="magnit_view_cart"
-        ? await viewMagnitCart({session:saved,storeCode:args.store_code,mode:args.mode,saveSession:(session)=>sessionStore.save(session)})
-        : await (async()=>{eligibleCartItems.require(args.store_code,args.good_id,args.offer_id);return addMagnitCartItem({session:saved,storeCode:args.store_code,mode:args.mode,goodId:args.good_id,offerId:args.offer_id,quantity:args.quantity,saveSession:(session)=>sessionStore.save(session)})})();
+        ? await enrichCart(await viewMagnitCart({session:saved,storeCode:args.store_code,mode:args.mode,saveSession:(session)=>sessionStore.save(session),operationStore:cartOperationStore}))
+        : params.name==="magnit_add_to_cart"
+          ? await (async()=>{eligibleCartItems.require(args.store_code,args.good_id,args.offer_id);return addMagnitCartItem({session:saved,storeCode:args.store_code,mode:args.mode,goodId:args.good_id,offerId:args.offer_id,quantity:args.quantity,saveSession:(session)=>sessionStore.save(session),operationStore:cartOperationStore})})()
+          : await applyMagnitCart({session:saved,storeCode:args.store_code,mode:args.mode,requestId:args.request_id,operations:args.operations,saveSession:(session)=>sessionStore.save(session),operationStore:cartOperationStore,requireEligible:(storeCode,goodId,offerId)=>eligibleCartItems.require(storeCode,goodId,offerId)});
     }
     return writeJson(res,200,rpc(id,{content:[{type:"text",text:JSON.stringify(result)}]}));
   }catch(cause){
@@ -136,6 +167,21 @@ async function handlePhone(req,res,url){
     const s=readSession(req);if(!s)return error(res,401,"Введите пароль доступа.");return writeJson(res,200,{csrf:s.csrf})
   }
   if(req.method==="GET"&&url.pathname==="/api/session-status"){if((req.headers.origin&&!originMatches(req))||!readSession(req))return error(res,401,"Введите пароль доступа.");return writeJson(res,200,publicSessionState(await sessionStore.load()))}
+  if(req.method==="GET"&&url.pathname==="/api/phone/shopping-context"){
+    if((req.headers.origin&&!originMatches(req))||!readSession(req))return error(res,401,"Обновите страницу и попробуйте ещё раз.");
+    try{return writeJson(res,200,await getMagnitShoppingContext({session:await sessionStore.load()}))}
+    catch(cause){return writeJson(res,400,{error:cause instanceof MagnitApiError?cause.message:"Не удалось прочитать контекст аккаунта.",code:cause instanceof MagnitApiError?cause.code:"upstream_error"})}
+  }
+  if(req.method==="GET"&&url.pathname==="/api/phone/order-history"){
+    if((req.headers.origin&&!originMatches(req))||!readSession(req))return error(res,401,"Обновите страницу и попробуйте ещё раз.");
+    try{return writeJson(res,200,await getMagnitOrderHistory({session:await sessionStore.load(),page:Number(url.searchParams.get("page")||1),limit:Number(url.searchParams.get("limit")||10)}))}
+    catch(cause){return writeJson(res,400,{error:cause instanceof MagnitApiError?cause.message:"Не удалось прочитать историю заказов.",code:cause instanceof MagnitApiError?cause.code:"upstream_error"})}
+  }
+  if(req.method==="GET"&&url.pathname==="/api/phone/product-details"){
+    if((req.headers.origin&&!originMatches(req))||!readSession(req))return error(res,401,"Обновите страницу и попробуйте ещё раз.");
+    try{return writeJson(res,200,await productDetailsWithCartRule(url.searchParams.get("product_id"),url.searchParams.get("store_code"),url.searchParams.get("mode")||"express"))}
+    catch(cause){return writeJson(res,400,{error:cause instanceof MagnitApiError?cause.message:"Не удалось прочитать сведения о товаре.",code:cause instanceof MagnitApiError?cause.code:"upstream_error"})}
+  }
   if(req.method==="POST"&&url.pathname==="/api/phone/magnit-login/start"){
     if(!requirePhone(req,res))return;
     if(androidLogin&&["opening","waiting","verifying"].includes(androidLogin.snapshot().status))return writeJson(res,200,androidLogin.snapshot());
@@ -179,13 +225,13 @@ async function handlePhone(req,res,url){
   }
   if(req.method==="GET"&&url.pathname==="/api/phone/cart"){
     if((req.headers.origin&&!originMatches(req))||!readSession(req))return error(res,401,"Введите пароль доступа.");
-    try{return writeJson(res,200,await viewMagnitCart({session:await sessionStore.load(),storeCode:url.searchParams.get("store_code"),mode:url.searchParams.get("mode"),saveSession:(session)=>sessionStore.save(session)}))}
+    try{return writeJson(res,200,await enrichCart(await viewMagnitCart({session:await sessionStore.load(),storeCode:url.searchParams.get("store_code"),mode:url.searchParams.get("mode"),saveSession:(session)=>sessionStore.save(session),operationStore:cartOperationStore})))}
     catch(cause){return writeJson(res,400,{error:cause instanceof Error?cause.message:"Не удалось прочитать корзину.",code:cause instanceof MagnitApiError?cause.code:"invalid_arguments"})}
   }
   if(req.method==="POST"&&url.pathname==="/api/phone/cart/add"){
     if(!requirePhone(req,res))return;
     let b;try{b=await readJson(req)}catch{return error(res,400)}
-    try{eligibleCartItems.require(b.store_code,b.good_id,b.offer_id);return writeJson(res,200,await addMagnitCartItem({session:await sessionStore.load(),storeCode:b.store_code,mode:b.mode,goodId:b.good_id,offerId:b.offer_id,quantity:b.quantity,saveSession:(session)=>sessionStore.save(session)}))}
+    try{eligibleCartItems.require(b.store_code,b.good_id,b.offer_id);return writeJson(res,200,await addMagnitCartItem({session:await sessionStore.load(),storeCode:b.store_code,mode:b.mode,goodId:b.good_id,offerId:b.offer_id,quantity:b.quantity,saveSession:(session)=>sessionStore.save(session),operationStore:cartOperationStore}))}
     catch(cause){return writeJson(res,400,{error:cause instanceof Error?cause.message:"Не удалось изменить корзину.",code:cause instanceof MagnitApiError?cause.code:"invalid_arguments"})}
   }
   if(req.method==="POST"&&url.pathname==="/api/search"){
