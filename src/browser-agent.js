@@ -185,6 +185,10 @@ function clickTarget({ selector, forbiddenWords }) {
   catch { return { ok: false, code: "invalid_selector" }; }
   if (matches.length !== 1) return { ok: false, code: matches.length ? "multiple_elements" : "element_not_found" };
   const el = matches[0];
+  // Do not interact with checkout and payment pages at all; a generic label
+  // such as "Continue" can otherwise submit an order on some merchants.
+  if (/(?:checkout|payment|pay-now|order-confirm|place-order|confirm-order|oplata|oformlenie-zakaza)/i.test(location.pathname))
+    return { ok: false, code: "checkout_page_blocked" };
   const label = (el.getAttribute("aria-label") || el.innerText || el.value || "").trim().slice(0, 170);
   if (new RegExp(forbiddenWords, "i").test(label) ||
       new RegExp(forbiddenWords, "i").test(String(el.getAttribute("href") || "")))
