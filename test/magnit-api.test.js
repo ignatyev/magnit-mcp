@@ -149,3 +149,26 @@ test("delivery eligibility requires explicit service, target cart, same-store id
     assert.equal(item.good_id,null);
   }
 });
+
+
+test("catalog returns safe blocker reasons without granting unsound delivery cart IDs", () => {
+  const eligible = {
+    id:"unit",productId:"unit",name:"Milk",service:"dostavka",targetCart:"dostavka",storeCode:"992332",
+    weighted:{isWeighted:false},orderProperties:{minOrderQuantity:1,orderStepQuantity:1},
+    isAdditionalActionRequired:false,isBiometryRequired:false,isForAdults:false,needPassport:false,pickupOnly:false,
+  };
+  const products=parseProducts({storeCode:"992332",mode:"delivery",items:[
+    eligible,
+    {...eligible,id:"wrong",productId:"wrong",service:"express",targetCart:"express"},
+    {...eligible,id:"weighted",productId:"weighted",weighted:{isWeighted:true}},
+    {...eligible,id:"noID",productId:"different"},
+  ]});
+  assert.equal(products[0].cart_addable,true);
+  assert.deepEqual(products[0].cart_add_blockers,[]);
+  assert.equal(products[1].cart_addable,false);
+  assert.deepEqual(products[1].cart_add_blockers,["service_or_target_cart"]);
+  assert.equal(products[2].cart_addable,false);
+  assert.deepEqual(products[2].cart_add_blockers,["weighted_or_unknown"]);
+  assert.deepEqual(products[3].cart_add_blockers,["product_id_mismatch"]);
+  assert.equal(products[3].good_id,null);
+});
