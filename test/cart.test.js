@@ -269,3 +269,40 @@ test("mixed-service delivery cart never sends PUT even if session is synchronize
   assert.equal(calls,1);
   assert.equal(started,false);
 });
+
+
+test("delivery apply rejects unsynced context before journal or network", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301"}};
+  let calls=0;
+  await assert.rejects(applyMagnitCart({
+    session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-004",
+    operations:[{action:"remove",good_id:"milk",offer_id:"milk"}],
+    operationStore:{fingerprint:()=> "fake", inspect:async()=>{calls++;return {replay:false}}},
+    fetchImpl:async()=>{calls++;return response(cart([]))}
+  }),err=>err.code==="delivery_context_unverified");
+  assert.equal(calls,0);
+});
+
+test("delivery remove preserves remaining items and verifies GET readback", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:true}};
+  const base=(items)=>({items:items.map((i)=>({...i,goodService:"dostavka"})),
+    formats:[{service:"dostavka",storeCode:"992332",itemsCount:items.length}]});
+  const keep={goodId:"keep",offerId:"keep",qnty:1};
+  const remove={goodId:"remove",offerId:"remove",qnty:2};
+  const calls=[],statuses=[];
+  const result=await applyMagnitCart({
+    session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-005",
+    operations:[{action:"remove",good_id:"remove",offer_id:"remove"}],
+    operationStore:{
+      fingerprint:()=> "fake",inspect:async()=>({replay:false}),assertWritable:async()=>{},
+      begin:async()=>{},finish:async({status})=>statuses.push(status)},
+    fetchImpl:async(_url,init)=>{
+      calls.push(init);
+      return response(calls.length===1?base([keep,remove]):base([keep]));
+    },
+  });
+  assert.deepEqual(calls.map(x=>x.method),["GET","PUT","GET"]);
+  assert.deepEqual(JSON.parse(calls[1].body),{items:[{goodId:"keep",offerId:"keep",qnty:1}]});
+  assert.equal(result.items.length,1);
+  assert.deepEqual(statuses,["complete"]);
+});
