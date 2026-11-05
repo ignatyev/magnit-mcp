@@ -156,7 +156,7 @@ test("public snapshot exposes only redacted header names and counts",()=>{
       browser_cookie_count:2,captured_at:"2026-11-05T14:50:06Z"
     }};
   const out=publicSessionState(saved);
-  assert.deepEqual(out.browser_cart_snapshot.request_header_names,["x-service","user-agent","authorization"]);
+  assert.deepEqual(out.browser_cart_snapshot.request_header_names,["x-service","user-agent"]);
   assert.equal(out.browser_cart_snapshot.browser_cookie_count,2);
   assert.equal(JSON.stringify(out).includes("SECRET"),false);
   assert.equal(JSON.stringify(out).includes("sid=private"),false);
