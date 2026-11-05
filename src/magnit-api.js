@@ -68,10 +68,16 @@ export function parseProducts(payload) {
     // is offered for writing only if it explicitly identifies its own service,
     // store and one-unit increment, with no age/biometry/weight restrictions.
     const addRule = eligibleService === "delivery" ? "constrained-delivery-catalog-v1" : "observed-express-fixture-v1";
-    const cartAddable = eligibleService !== null &&
-      typeof item?.storeCode === "string" && item.storeCode === String(payload.storeCode) &&
-      sourceId.length > 0 && sourceId === productId && item?.weighted?.isWeighted === false && minOrder === 1 && orderStep === 1 &&
-      item?.isAdditionalActionRequired === false && item?.isBiometryRequired === false && item?.isForAdults === false && item?.needPassport === false && item?.pickupOnly === false;
+    const cartAddBlockers = [];
+    if (eligibleService === null || (payload.mode && eligibleService !== payload.mode)) cartAddBlockers.push("service_or_target_cart");
+    if (typeof item?.storeCode !== "string" || item.storeCode !== String(payload.storeCode)) cartAddBlockers.push("store_mismatch");
+    if (!sourceId || sourceId !== productId) cartAddBlockers.push("product_id_mismatch");
+    if (item?.weighted?.isWeighted !== false) cartAddBlockers.push("weighted_or_unknown");
+    if (minOrder !== 1 || orderStep !== 1) cartAddBlockers.push("non_unit_quantity");
+    if (item?.isAdditionalActionRequired !== false || item?.isBiometryRequired !== false ||
+      item?.isForAdults !== false || item?.needPassport !== false || item?.pickupOnly !== false)
+      cartAddBlockers.push("special_restrictions");
+    const cartAddable = cartAddBlockers.length === 0;
     return {
       id: cleanText(item?.productId ?? item?.id, 180),
       source_id: sourceId || null,
@@ -87,6 +93,7 @@ export function parseProducts(payload) {
       weighted: item?.weighted && typeof item.weighted === "object" ? { is_weighted: typeof item.weighted.isWeighted === "boolean" ? item.weighted.isWeighted : null, shelf_weight: item.weighted.shelfWeight != null && Number.isFinite(Number(item.weighted.shelfWeight)) ? Number(item.weighted.shelfWeight) : null, unit_price_raw: Number.isSafeInteger(item.weighted.unitPrice) ? item.weighted.unitPrice : null } : null,
       increment: item?.increment && typeof item.increment === "object" ? { unit: cleanText(item.increment.unit, 40) || null, value: item.increment.value != null && Number.isFinite(Number(item.increment.value)) ? Number(item.increment.value) : null } : null,
       cart_addable: cartAddable,
+      cart_add_blockers: cartAddBlockers,
       cart_add_rule: cartAddable ? addRule : null,
       good_id: cartAddable ? productId : null,
       offer_id: cartAddable ? sourceId : null,
@@ -144,7 +151,7 @@ export async function searchMagnit({ query, storeCode, limit = 20, mode = "deliv
     headers: { Accept: "application/json", "Content-Type": "application/json", Origin: "https://magnit.ru", Referer: "https://magnit.ru/" },
     body: JSON.stringify(payload),
   }, fetchImpl, timeoutMs);
-  return { store_code: payload.storeCode, mode, store_type: payload.storeType, catalog_type: payload.catalogType, products: parseProducts({ ...data, storeCode: payload.storeCode }) };
+  return { store_code: payload.storeCode, mode, store_type: payload.storeType, catalog_type: payload.catalogType, products: parseProducts({ ...data, storeCode: payload.storeCode, mode }) };
 }
 
 export async function getMagnitCategories({ storeCode, mode = "delivery", fetchImpl = fetch, timeoutMs = 15_000 }) {
