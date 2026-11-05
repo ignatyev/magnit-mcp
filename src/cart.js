@@ -124,45 +124,85 @@ function serializeCartOperation(operation) {
 }
 
 function cartView(data, context) {
-  if (!data || typeof data !== "object" || !Array.isArray(data.items) || data.items.length > 250) throw new MagnitApiError("invalid_response", "Магнит вернул неизвестную структуру корзины.");
-  if (!Array.isArray(data.formats)) throw new MagnitApiError("cart_format_ambiguous", "Корзина не содержит список форматов.");
-  if (data.items.length === 0 && data.formats.length === 0) return {
-    store_code: context.storeCode,
-    request_store_code: context.storeCode,
-    cart_store_code: null,
-    service: context.service,
-    items: [],
-    totals_lite: { base_price_raw: typeof data.totalBasePrice === "number" ? data.totalBasePrice : null, final_price_raw: typeof data.totalFinalPrice === "number" ? data.totalFinalPrice : null, goods_count: Number.isSafeInteger(data.totalGoodsCount) ? data.totalGoodsCount : null, is_checkout_quote: false, note: "Сводка lite-корзины; не является итогом оформления заказа." },
+  if (!data || typeof data !== "object" || !Array.isArray(data.items) || data.items.length > 250)
+    throw new MagnitApiError("invalid_response", "Магнит вернул неизвестную структуру корзины.");
+  if (!Array.isArray(data.formats) || data.formats.length > 20)
+    throw new MagnitApiError("invalid_response", "Магнит вернул неизвестную структуру форматов корзины.");
+
+  const totals_lite = {
+    base_price_raw: typeof data.totalBasePrice === "number" ? data.totalBasePrice : null,
+    final_price_raw: typeof data.totalFinalPrice === "number" ? data.totalFinalPrice : null,
+    goods_count: Number.isSafeInteger(data.totalGoodsCount) ? data.totalGoodsCount : null,
+    is_checkout_quote: false,
+    note: "Сводка lite-корзины; не является итогом оформления заказа.",
   };
-  if (data.formats.length !== 1) throw new MagnitApiError("cart_format_ambiguous", "Корзина содержит неизвестное число форматов.");
-  const format = data.formats[0];
-  let cartStoreCode;
-  try { cartStoreCode = validateStoreCode(String(format?.storeCode ?? "")); } catch { throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не содержит допустимый код магазина."); }
-  if (format?.service !== context.service || !Number.isSafeInteger(format?.itemsCount) || format.itemsCount < 0 || format.itemsCount > 250) throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не совпадает с express-контекстом.");
-  for (const item of data.items) {
-    if ((item?.goodStoreCode != null && String(item.goodStoreCode) !== cartStoreCode) || (item?.goodService != null && String(item.goodService) !== context.service)) throw new MagnitApiError("cart_context_ambiguous", "В корзине обнаружен другой магазин или сервис.");
-  }
-  const items = data.items.map((item) => ({
-    good_id: typeof item?.goodId === "string" ? item.goodId.slice(0, 128) : null,
-    offer_id: typeof item?.offerId === "string" ? item.offerId.slice(0, 128) : null,
-    quantity: Number.isSafeInteger(item?.qnty) ? item.qnty : null,
-    quantity_increment: item?.increment && typeof item.increment === "object" ? { unit: typeof item.increment.unit === "string" ? item.increment.unit.slice(0, 40) : null, value: Number.isFinite(item.increment.value) ? item.increment.value : null } : null,
-    catalog_price_raw: Number.isSafeInteger(item?.catalogPrice) ? item.catalogPrice : null,
-  }));
-  return {
+  // The lite endpoint returns the account cart, not necessarily a single
+  // store/service. A multi-format response is safe to display, but NOT to PUT:
+  // item ownership can be absent even when format metadata is present.
+  const formats = data.formats.map((format) => {
+    let storeCode = null;
+    try { storeCode = validateStoreCode(String(format?.storeCode ?? "")); } catch {}
+    return {
+      service: typeof format?.service === "string" && /^[a-zA-Z0-9_-]{1,32}$/.test(format.service) ? format.service : null,
+      store_code: storeCode,
+      items_count: Number.isSafeInteger(format?.itemsCount) && format.itemsCount >= 0 && format.itemsCount <= 250 ? format.itemsCount : null,
+    };
+  });
+  const items = data.items.map((item) => {
+    let itemStore = null;
+    if (item?.goodStoreCode != null) {
+      try { itemStore = validateStoreCode(String(item.goodStoreCode)); } catch {}
+    }
+    return {
+      good_id: typeof item?.goodId === "string" ? item.goodId.slice(0, 128) : null,
+      offer_id: typeof item?.offerId === "string" ? item.offerId.slice(0, 128) : null,
+      quantity: Number.isSafeInteger(item?.qnty) ? item.qnty : null,
+      // These fields are literal per-item server metadata, not an inferred
+      // association with one of the returned formats.
+      good_store_code: itemStore,
+      good_service: typeof item?.goodService === "string" && /^[a-zA-Z0-9_-]{1,32}$/.test(item.goodService) ? item.goodService : null,
+      quantity_increment: item?.increment && typeof item.increment === "object"
+        ? { unit: typeof item.increment.unit === "string" ? item.increment.unit.slice(0, 40) : null, value: Number.isFinite(item.increment.value) ? item.increment.value : null }
+        : null,
+      catalog_price_raw: Number.isSafeInteger(item?.catalogPrice) ? item.catalogPrice : null,
+    };
+  });
+  const common = {
     store_code: context.storeCode,
     request_store_code: context.storeCode,
-    cart_store_code: cartStoreCode,
     service: context.service,
+    formats,
     items,
-    totals_lite: {
-      base_price_raw: typeof data.totalBasePrice === "number" ? data.totalBasePrice : null,
-      final_price_raw: typeof data.totalFinalPrice === "number" ? data.totalFinalPrice : null,
-      goods_count: Number.isSafeInteger(data.totalGoodsCount) ? data.totalGoodsCount : null,
-      is_checkout_quote: false,
-      note: "Сводка lite-корзины; не является итогом оформления заказа.",
-    },
+    totals_lite,
   };
+
+  if (data.formats.length === 0 && data.items.length === 0) {
+    return { ...common, cart_store_code: null, read_only: false, cart_context_status: "empty", warning: null };
+  }
+  if (data.formats.length !== 1) {
+    const multiple = data.formats.length > 1;
+    return {
+      ...common,
+      cart_store_code: null,
+      read_only: true,
+      cart_context_status: multiple ? "multiple_formats" : "formats_missing",
+      warning: multiple
+        ? "Магнит вернул несколько форматов корзины. Все позиции показаны без предположений об их принадлежности; изменение заблокировано во избежание потери товаров."
+        : "Магнит вернул товары без сведений о формате корзины. Изменение заблокировано во избежание потери товаров.",
+    };
+  }
+
+  const format = data.formats[0];
+  const cartStoreCode = formats[0].store_code;
+  if (!cartStoreCode) throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не содержит допустимый код магазина.");
+  if (format?.service !== context.service || !Number.isSafeInteger(format?.itemsCount) || format.itemsCount < 0 || format.itemsCount > 250)
+    throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не совпадает с express-контекстом.");
+  for (const item of data.items) {
+    if ((item?.goodStoreCode != null && String(item.goodStoreCode) !== cartStoreCode) ||
+        (item?.goodService != null && String(item.goodService) !== context.service))
+      throw new MagnitApiError("cart_context_ambiguous", "В корзине обнаружен другой магазин или сервис.");
+  }
+  return { ...common, cart_store_code: cartStoreCode, read_only: false, cart_context_status: "single_format", warning: null };
 }
 
 export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore = null }) {
@@ -170,6 +210,9 @@ export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fet
   return serializeCartOperation(async () => {
     const data = await cartRequest(active, "GET", null, fetchImpl, timeoutMs);
     const view = cartView(data, active.context);
+    // An ambiguous GET only proves the HTTP call succeeded. It cannot resolve
+    // pending writes against a particular store or format.
+    if (view.read_only) return view;
     reconciliationRequired = false;
     if (operationStore) await operationStore.reconcile({ sessionFingerprint: operationStore.fingerprint(active.cookie), storeCode: active.context.storeCode, cartSummary: { item_count: view.items.length, request_store_code: view.request_store_code } });
     if (active.cartReconciliationRequired) await saveSession({ ...active, cartReconciliationRequired: false });
@@ -282,7 +325,9 @@ export async function applyMagnitCart({ session, storeCode, mode, requestId, ope
     if (reconciliationRequired || active.cartReconciliationRequired) throw new MagnitApiError("cart_reconciliation_required", "После неопределённого изменения сначала явно перечитайте корзину.");
     for (const op of normalized) if (op.action !== "remove") await requireEligible(storeCode, op.good_id, op.offer_id, op.action);
     const before = await cartRequest(active, "GET", null, fetchImpl, timeoutMs);
-    cartView(before, active.context);
+    const beforeView = cartView(before, active.context);
+    if (beforeView.read_only)
+      throw new MagnitApiError("cart_format_ambiguous", "Магнит вернул несколько форматов или товары без формата; изменение заблокировано до однозначного состава корзины.");
     if (!Array.isArray(before.items) || before.items.length > 250) throw new MagnitApiError("invalid_response", "Невозможно безопасно сохранить состав корзины.");
     let formatStoreCode = null;
     if (before.formats.length === 1) {
