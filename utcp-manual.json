@@ -265,7 +265,7 @@
     },
     {
       "name": "add_to_cart",
-      "description": "Add verified nonweighted express product; re-search query in same call; request_id prevents replay.",
+      "description": "Guarded add of an explicitly verified nonweighted product to selected Express or Delivery cart; requires browser-synced delivery context. Preserves all prior items and confirms the result.",
       "tags": [
         "magnit",
         "shopping"
@@ -293,6 +293,13 @@
           "request_id": {
             "type": "string",
             "minLength": 8
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "delivery",
+              "express"
+            ]
           }
         },
         "required": [
@@ -301,7 +308,8 @@
           "good_id",
           "offer_id",
           "quantity",
-          "request_id"
+          "request_id",
+          "mode"
         ],
         "additionalProperties": false
       },
@@ -312,7 +320,7 @@
         "call_template_type": "cli",
         "commands": [
           {
-            "command": "node --env-file-if-exists=.env src/tool-cli.js add_to_cart UTCP_ARG_query_UTCP_END UTCP_ARG_store_code_UTCP_END UTCP_ARG_good_id_UTCP_END UTCP_ARG_offer_id_UTCP_END UTCP_ARG_quantity_UTCP_END UTCP_ARG_request_id_UTCP_END"
+            "command": "node --env-file-if-exists=.env src/tool-cli.js add_to_cart UTCP_ARG_query_UTCP_END UTCP_ARG_store_code_UTCP_END UTCP_ARG_good_id_UTCP_END UTCP_ARG_offer_id_UTCP_END UTCP_ARG_quantity_UTCP_END UTCP_ARG_request_id_UTCP_END UTCP_ARG_mode_UTCP_END"
           }
         ],
         "working_dir": "."
@@ -320,7 +328,7 @@
     },
     {
       "name": "apply_cart",
-      "description": "Atomic 1–20 add/set/remove. Every add/set contains query for fresh verification. request_id required.",
+      "description": "Guarded add/set/remove to selected Express or Delivery cart. Delivery requires browser-synced context and is confirmed by a subsequent GET; multi-format writes are rejected.",
       "tags": [
         "magnit",
         "shopping"
@@ -338,12 +346,20 @@
           "request_id": {
             "type": "string",
             "minLength": 8
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "delivery",
+              "express"
+            ]
           }
         },
         "required": [
           "store_code",
           "operations",
-          "request_id"
+          "request_id",
+          "mode"
         ],
         "additionalProperties": false
       },
@@ -354,7 +370,7 @@
         "call_template_type": "cli",
         "commands": [
           {
-            "command": "node --env-file-if-exists=.env src/tool-cli.js apply_cart UTCP_ARG_store_code_UTCP_END UTCP_ARG_operations_UTCP_END UTCP_ARG_request_id_UTCP_END"
+            "command": "node --env-file-if-exists=.env src/tool-cli.js apply_cart UTCP_ARG_store_code_UTCP_END UTCP_ARG_operations_UTCP_END UTCP_ARG_request_id_UTCP_END UTCP_ARG_mode_UTCP_END"
           }
         ],
         "working_dir": "."

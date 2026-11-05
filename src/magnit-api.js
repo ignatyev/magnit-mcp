@@ -62,8 +62,13 @@ export function parseProducts(payload) {
     const orderStep = Number.isSafeInteger(item?.orderProperties?.orderStepQuantity) && item.orderProperties.orderStepQuantity > 0 ? item.orderProperties.orderStepQuantity : null;
     const sourceId = typeof item?.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(item.id) ? item.id : "";
     const productId = typeof item?.productId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(item.productId) ? item.productId : "";
-    const addRule = "observed-express-fixture-v1";
-    const cartAddable = item?.service === "express" && item?.targetCart === "express" &&
+    const eligibleService = item?.service === "express" && item?.targetCart === "express"
+      ? "express" : item?.service === "dostavka" && item?.targetCart === "dostavka" ? "delivery" : null;
+    // Delivery product mapping still needs real-device verification. A product
+    // is offered for writing only if it explicitly identifies its own service,
+    // store and one-unit increment, with no age/biometry/weight restrictions.
+    const addRule = eligibleService === "delivery" ? "constrained-delivery-catalog-v1" : "observed-express-fixture-v1";
+    const cartAddable = eligibleService !== null &&
       typeof item?.storeCode === "string" && item.storeCode === String(payload.storeCode) &&
       sourceId.length > 0 && sourceId === productId && item?.weighted?.isWeighted === false && minOrder === 1 && orderStep === 1 &&
       item?.isAdditionalActionRequired === false && item?.isBiometryRequired === false && item?.isForAdults === false && item?.needPassport === false && item?.pickupOnly === false;

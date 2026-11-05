@@ -123,3 +123,29 @@ test("network timeouts and oversized responses return bounded errors", async () 
 test("unexpected product response shape is an upstream schema error", async () => {
   await assert.rejects(searchMagnit({ query: "x", storeCode: "123456", fetchImpl: async () => jsonResponse({ products: [] }) }), (error) => error.code === "invalid_response");
 });
+
+
+test("delivery eligibility requires explicit service, target cart, same-store identity and nonweighted unit quantity", () => {
+  const delivery={
+    id:"delivery-product",productId:"delivery-product",name:"Synthetic delivery milk",service:"dostavka",
+    targetCart:"dostavka",storeCode:"992301",quantity:10,weighted:{isWeighted:false},
+    orderProperties:{minOrderQuantity:1,orderStepQuantity:1},
+    isAdditionalActionRequired:false,isBiometryRequired:false,isForAdults:false,needPassport:false,pickupOnly:false,
+  };
+  const products=parseProducts({storeCode:"992301",items:[
+    delivery,
+    {...delivery,id:"wrong-service",productId:"wrong-service",service:"express"},
+    {...delivery,id:"wrong-target",productId:"wrong-target",targetCart:"express"},
+    {...delivery,id:"weighted",productId:"weighted",weighted:{isWeighted:true}},
+    {...delivery,id:"wrong-store",productId:"wrong-store",storeCode:"992332"},
+    {...delivery,id:"restricted",productId:"restricted",needPassport:true},
+  ]});
+  assert.equal(products[0].cart_addable,true);
+  assert.equal(products[0].cart_add_rule,"constrained-delivery-catalog-v1");
+  assert.equal(products[0].good_id,"delivery-product");
+  assert.equal(products[0].offer_id,"delivery-product");
+  for(const item of products.slice(1)){
+    assert.equal(item.cart_addable,false,item.id);
+    assert.equal(item.good_id,null);
+  }
+});

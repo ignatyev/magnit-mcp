@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addMagnitCartItem, viewMagnitCart } from "../src/cart.js";
+import { addMagnitCartItem, applyMagnitCart, viewMagnitCart } from "../src/cart.js";
 
 const session = { cookie: "sid=synthetic-cookie", context: { service: "express", storeCode: "123456", bff: "synthetic-bff", permissionsJwt: null } };
 const cart = (items, formatCount = items.length) => ({ items, formats: [{ itemsCount: formatCount, service: "express", storeCode: "123456" }], totalBasePrice: 12345, totalFinalPrice: 11111, totalGoodsCount: items.length });
@@ -197,11 +197,112 @@ test("mixed carts display only delivery items and cannot clear pending reconcili
   assert.equal(saved,false);
 });
 
-test("delivery cart mutations are refused before any network access", async () => {
+test("legacy unjournaled delivery add remains disabled before network access", async () => {
   const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" } };
   let calls=0;
   await assert.rejects(addMagnitCartItem({session:sessionDelivery,storeCode:"992301",mode:"delivery",
     goodId:"milk",offerId:"milk",quantity:1,fetchImpl:async()=>{calls++;return response(cart([]))}}),
   (error)=>error.code==="unsupported_mode");
   assert.equal(calls,0);
+});
+
+
+test("guarded delivery add preserves existing items and verifies PUT with independent GET", async () => {
+  const sessionDelivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:true}};
+  const format=(count)=>[{itemsCount:count,service:"dostavka",storeCode:"992332"}];
+  const existing={goodId:"existing",offerId:"existing",qnty:2,goodService:"dostavka",increment:{unit:"apiece",value:1}};
+  const added={goodId:"milk",offerId:"milk",qnty:1,goodService:"dostavka",goodStoreCode:"992332",increment:{unit:"apiece",value:1}};
+  const before={items:[existing],formats:format(1)};
+  const after={items:[existing,added],formats:format(2)};
+  const calls=[];
+  const receipt=[];
+  const operationStore={
+    fingerprint:()=> "fingerprint",
+    inspect:async()=>({replay:false}),
+    assertWritable:async ({storeCode})=>assert.equal(storeCode,"dostavka:992301"),
+    begin:async ({storeCode})=>{assert.equal(storeCode,"dostavka:992301");receipt.push("begin")},
+    finish:async ({status})=>receipt.push(status),
+  };
+  const result=await applyMagnitCart({session:sessionDelivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-001",
+    operations:[{action:"add",good_id:"milk",offer_id:"milk",quantity:1}],
+    operationStore,requireEligible:async()=>{},
+    fetchImpl:async(_url,init)=>{
+      calls.push(init);
+      if(calls.length===1)return response(before);
+      if(calls.length===2)return response(after);
+      return response(after);
+    }});
+  assert.deepEqual(calls.map(x=>x.method),["GET","PUT","GET"]);
+  assert.equal(calls[1].headers["x-service"],"dostavka");
+  assert.deepEqual(JSON.parse(calls[1].body),{items:[{goodId:"existing",offerId:"existing",qnty:2},{goodId:"milk",offerId:"milk",qnty:1}]});
+  assert.deepEqual(receipt,["begin","complete"]);
+  assert.equal(result.mutation,"applied_and_verified");
+  assert.equal(result.cart_store_code,"992332");
+  assert.equal(result.read_only,false);
+  assert.equal(result.items.length,2);
+});
+
+test("delivery response mismatch fails closed and leaves a journal marker", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:true}};
+  const empty={items:[],formats:[{itemsCount:0,service:"dostavka",storeCode:"992332"}]};
+  const after={items:[{goodId:"milk",offerId:"milk",qnty:1,goodService:"dostavka"}],formats:[{itemsCount:1,service:"dostavka",storeCode:"992332"}]};
+  const statuses=[];let n=0;
+  const operationStore={fingerprint:()=> "fake",inspect:async()=>({replay:false}),assertWritable:async()=>{},begin:async()=>{},finish:async ({status})=>statuses.push(status)};
+  await assert.rejects(applyMagnitCart({session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-002",
+    operations:[{action:"add",good_id:"milk",offer_id:"milk",quantity:1}],operationStore,requireEligible:async()=>{},
+    fetchImpl:async()=>{n++;return response(n===1?empty:n===2?after:empty)},
+  }),(err)=>err.code==="ambiguous_result");
+  assert.equal(n,3);
+  assert.deepEqual(statuses,["ambiguous"]);
+});
+
+test("mixed-service delivery cart never sends PUT even if session is synchronized", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:true}};
+  const mixed={items:[{goodId:"a",offerId:"a",qnty:1,goodService:"dostavka"},{goodId:"b",offerId:"b",qnty:1,goodService:"express"}],
+    formats:[{service:"dostavka",storeCode:"992332",itemsCount:1},{service:"express",storeCode:"233826",itemsCount:1}]};
+  let calls=0,started=false;
+  await assert.rejects(applyMagnitCart({session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-003",
+    operations:[{action:"remove",good_id:"a",offer_id:"a"}],
+    operationStore:{fingerprint:()=> "fake",inspect:async()=>({replay:false}),assertWritable:async()=>{},begin:async()=>{started=true}},
+    fetchImpl:async()=>{calls++;return response(mixed)},
+  }),(err)=>err.code==="cart_format_ambiguous");
+  assert.equal(calls,1);
+  assert.equal(started,false);
+});
+
+
+test("delivery apply rejects unsynced context before journal or network", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301"}};
+  let calls=0;
+  await assert.rejects(applyMagnitCart({
+    session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-004",
+    operations:[{action:"remove",good_id:"milk",offer_id:"milk"}],
+    operationStore:{fingerprint:()=> "fake", inspect:async()=>{calls++;return {replay:false}}},
+    fetchImpl:async()=>{calls++;return response(cart([]))}
+  }),err=>err.code==="delivery_context_unverified");
+  assert.equal(calls,0);
+});
+
+test("delivery remove preserves remaining items and verifies GET readback", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:true}};
+  const base=(items)=>({items:items.map((i)=>({...i,goodService:"dostavka"})),
+    formats:[{service:"dostavka",storeCode:"992332",itemsCount:items.length}]});
+  const keep={goodId:"keep",offerId:"keep",qnty:1};
+  const remove={goodId:"remove",offerId:"remove",qnty:2};
+  const calls=[],statuses=[];
+  const result=await applyMagnitCart({
+    session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-005",
+    operations:[{action:"remove",good_id:"remove",offer_id:"remove"}],
+    operationStore:{
+      fingerprint:()=> "fake",inspect:async()=>({replay:false}),assertWritable:async()=>{},
+      begin:async()=>{},finish:async({status})=>statuses.push(status)},
+    fetchImpl:async(_url,init)=>{
+      calls.push(init);
+      return response(calls.length===1?base([keep,remove]):base([keep]));
+    },
+  });
+  assert.deepEqual(calls.map(x=>x.method),["GET","PUT","GET"]);
+  assert.deepEqual(JSON.parse(calls[1].body),{items:[{goodId:"keep",offerId:"keep",qnty:1}]});
+  assert.equal(result.items.length,1);
+  assert.deepEqual(statuses,["complete"]);
 });

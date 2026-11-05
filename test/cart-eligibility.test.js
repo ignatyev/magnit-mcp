@@ -26,3 +26,14 @@ test("search eligibility expires after ten minutes", () => {
   now += 101;
   assert.throws(() => registry.require("123456", "g1", "o1"), (error) => error.code === "cart_item_not_verified");
 });
+
+
+test("delivery eligibility cannot be reused in Express or a different store", () => {
+  const registry=createCartEligibilityRegistry();
+  registry.remember({mode:"delivery",store_code:"992301",products:[eligible]});
+  registry.require("992301","g1","o1","delivery");
+  assert.throws(()=>registry.require("992301","g1","o1","express"),(error)=>error.code==="cart_item_not_verified");
+  assert.throws(()=>registry.require("992332","g1","o1","delivery"),(error)=>error.code==="cart_item_not_verified");
+  registry.remember({mode:"express",store_code:"992301",products:[eligible]});
+  registry.require("992301","g1","o1","express");
+});
