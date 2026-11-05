@@ -1,7 +1,7 @@
 import { mkdir, open, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { getMagnitCategories, getMagnitProductDetails, searchMagnit, validateStoreCode, MagnitApiError } from "./magnit-api.js";
-import { applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders } from "./cart.js";
+import { applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders, describeMagnitCartRequest } from "./cart.js";
 import { createEncryptedSessionStore, publicSessionState, bindSearchContext } from "./session-store.js";
 import { createCartOperationStore } from "./cart-operation-store.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
@@ -67,6 +67,83 @@ export async function runTool(name,args={}) {
   if(name==="product_details")return getMagnitProductDetails({productId:safeId(args.product_id,"product_id"),storeCode:validateStoreCode(args.store_code),mode:"express"});
   if(name==="shopping_context")return getMagnitShoppingContext({session:await sessions.load()});
   if(name==="order_history")return getMagnitOrderHistory({session:await sessions.load(),page:integer(args.page,1,100),limit:integer(args.limit,10,30)});
+  if(name==="collect_debug_report")return locked(async()=>{
+    const {code,mode}=store(args);
+    const saved=await sessions.load();
+    const selected=sessionForSelectedStore(saved,code,mode);
+    const publicState=publicSessionState(saved);
+    const local=describeMagnitCartRequest(selected);
+    const snapshot=publicState.browser_cart_snapshot;
+    const observedHeaders=Array.isArray(snapshot?.request_header_names) ? snapshot.request_header_names : null;
+    const localHeaders=local?.header_names || [];
+    const diff=observedHeaders?{
+      chrome_only:observedHeaders.filter(x=>!localHeaders.includes(x)),
+      utcp_only:localHeaders.filter(x=>!observedHeaders.includes(x)),
+      present_in_both:observedHeaders.filter(x=>localHeaders.includes(x)),
+    }:null;
+    const report={
+      format:"magnit-utcp-debug-v1",
+      created_at:new Date().toISOString(),
+      safe_to_share:true,
+      writes_performed:0,
+      mode,request_store_code:code,
+      environment:{node:process.version,platform:process.platform,arch:process.arch},
+      session:{
+        authenticated:publicState.auth_saved,
+        verified_browser_context:publicState.cart_context_ready,
+        browser_service:publicState.service,
+        browser_request_store_code:publicState.store_code,
+        exact_context_match:publicState.cart_context_ready &&
+          publicState.service===(mode==="delivery"?"dostavka":"express") &&
+          publicState.store_code===code,
+        reconciliation_required:publicState.cart_reconciliation_required,
+      },
+      official_android_chrome:snapshot,
+      adapter_request_metadata:local,
+      header_name_comparison:diff,
+      chrome_cookie_count:snapshot?.browser_cookie_count ?? null,
+      utcp_cookie_count:local?.cookie_count ?? null,
+      header_coverage_available:observedHeaders!==null,
+      note:"Только чтение: HTTP GET корзины и POST поиска. Нет PUT, cookies, токенов, товаров, цен и адресов.",
+    };
+    function safeError(cause) {
+      const code=cause?.code;
+      return typeof code==="string" && /^[a-z][a-z0-9._:-]{1,63}$/i.test(code)?code:"diagnostic_failed";
+    }
+    if(!selected?.cookie){
+      report.cart_get={ok:false,error_code:"session_missing"};
+      report.catalog={ok:false,error_code:"session_missing"};
+      report.journal={ok:false,error_code:"session_missing"};
+      return report;
+    }
+    try {
+      report.cart_get=await diagnoseMagnitCartHeaders({session:selected,storeCode:code,mode});
+    } catch(cause) {
+      report.cart_get={ok:false,error_code:safeError(cause)};
+    }
+    try {
+      const catalog=await searchMagnit({query:"молоко",storeCode:code,mode,limit:20});
+      const blockers=Object.create(null);
+      for(const p of catalog.products) {
+        for(const blocker of p.cart_add_blockers || []) {
+          if(/^[a-z_]{1,40}$/.test(blocker)) blockers[blocker]=(blockers[blocker]||0)+1;
+        }
+      }
+      report.catalog={ok:true,query_category:"milk",product_count:catalog.products.length,
+        eligible_count:catalog.products.filter(p=>p.cart_addable).length,blocker_counts:blockers};
+    } catch(cause) {
+      report.catalog={ok:false,error_code:safeError(cause)};
+    }
+    try {
+      report.journal=await journal.summary({
+        sessionFingerprint:journal.fingerprint(selected.cookie),
+        storeCode:mode==="delivery"?"dostavka:"+code:code,
+      });
+    } catch(cause) {
+      report.journal={ok:false,error_code:safeError(cause)};
+    }
+    return report;
+  });
   if(name==="compare_cart_headers")return locked(async()=>{
     const {code,mode}=store(args);
     const selected=sessionForSelectedStore(await sessions.load(),code,mode);
