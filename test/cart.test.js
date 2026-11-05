@@ -122,3 +122,26 @@ test("HTTP 400 surfaces only safe upstream machine code, not server secrets or f
     fetchImpl: async () => Response.json({ code: "this-is-a-very-very-long-token:01234567890123456789012345678901234567890" }, { status: 400 }),
   }), (error) => error.code === "upstream_error" && error.message === "Запрос корзины отклонён (HTTP 400).");
 });
+
+
+test("browser-observed cart device headers and null permission marker are replayed", async () => {
+  const observedSession = {
+    cookie: session.cookie,
+    context: { ...session.context, observedInBrowser: true, permissionsJwt: "null",
+      deviceId: "synthetic-id", deviceTag: "synthetic-tag", appVersion: "2026.11.3-14.45",
+      platformVersion: "Android Chrome 156", userAgent: "synthetic-user-agent" },
+  };
+  let headers;
+  await viewMagnitCart({session: observedSession, storeCode: "123456", mode: "express", fetchImpl: async (_url, options) => {
+    headers = options.headers;
+    return response(cart([]));
+  }});
+  assert.equal(headers["x-device-id"], "synthetic-id");
+  assert.equal(headers["x-device-tag"], "synthetic-tag");
+  assert.equal(headers["x-app-version"], "2026.11.3-14.45");
+  assert.equal(headers["x-platform-version"], "Android Chrome 156");
+  assert.equal(headers["User-Agent"], "synthetic-user-agent");
+  assert.equal(headers["x-permissions-jwt"], "null");
+  assert.equal(headers.Authorization, undefined);
+  assert.equal(headers.Origin, undefined);
+});

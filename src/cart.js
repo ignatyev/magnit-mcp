@@ -29,7 +29,18 @@ function cartHeaders(session) {
     "x-store-code": context.storeCode,
     "x-magnit-bff": context.bff,
   };
-  if (context.permissionsJwt) headers["x-permissions-jwt"] = context.permissionsJwt;
+  // The official web client sends the literal string "null" when no permissions JWT exists.
+  headers["x-permissions-jwt"] = context.permissionsJwt || "null";
+  for (const [key, field, limit] of [
+    ["x-device-id", "deviceId", 128],
+    ["x-device-tag", "deviceTag", 128],
+    ["x-app-version", "appVersion", 64],
+    ["x-platform-version", "platformVersion", 96],
+    ["User-Agent", "userAgent", 512],
+  ]) {
+    const value = context[field];
+    if (typeof value === "string" && value.length > 0 && value.length <= limit && !/[\r\n\0]/.test(value)) headers[key] = value;
+  }
   return headers;
 }
 
