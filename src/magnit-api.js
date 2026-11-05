@@ -72,6 +72,13 @@ export function parseProducts(payload) {
       typeof item?.storeCode === "string" && item.storeCode === String(payload.storeCode) &&
       sourceId.length > 0 && sourceId === productId && item?.weighted?.isWeighted === false && minOrder === 1 && orderStep === 1 &&
       item?.isAdditionalActionRequired === false && item?.isBiometryRequired === false && item?.isForAdults === false && item?.needPassport === false && item?.pickupOnly === false;
+    const cartIneligibleReason = cartAddable ? null
+      : !eligibleService ? "Сервис или назначение товара не подтверждены для этой корзины."
+      : String(item?.storeCode ?? "") !== String(payload.storeCode) ? "Товар относится к другому магазину или магазин не указан."
+      : !sourceId || sourceId !== productId ? "Не совпадают идентификаторы товара и предложения."
+      : item?.weighted?.isWeighted !== false ? "Весовой товар: автоматическое добавление пока недоступно."
+      : minOrder !== 1 || orderStep !== 1 ? "Для товара требуется особое количество или шаг заказа."
+      : "У товара есть ограничения либо неполные сведения в каталоге.";
     return {
       id: cleanText(item?.productId ?? item?.id, 180),
       source_id: sourceId || null,
@@ -87,6 +94,7 @@ export function parseProducts(payload) {
       weighted: item?.weighted && typeof item.weighted === "object" ? { is_weighted: typeof item.weighted.isWeighted === "boolean" ? item.weighted.isWeighted : null, shelf_weight: item.weighted.shelfWeight != null && Number.isFinite(Number(item.weighted.shelfWeight)) ? Number(item.weighted.shelfWeight) : null, unit_price_raw: Number.isSafeInteger(item.weighted.unitPrice) ? item.weighted.unitPrice : null } : null,
       increment: item?.increment && typeof item.increment === "object" ? { unit: cleanText(item.increment.unit, 40) || null, value: item.increment.value != null && Number.isFinite(Number(item.increment.value)) ? Number(item.increment.value) : null } : null,
       cart_addable: cartAddable,
+      cart_ineligible_reason: cartIneligibleReason,
       cart_add_rule: cartAddable ? addRule : null,
       good_id: cartAddable ? productId : null,
       offer_id: cartAddable ? sourceId : null,
