@@ -29,7 +29,7 @@ test("search issues the fixed Magnit POST and explicit delivery payload", async 
   assert.equal(seen.init.headers.Origin, "https://magnit.ru");
   assert.deepEqual(JSON.parse(seen.init.body), {
     term: "молоко", pagination: { limit: 5, offset: 0 }, sort: { order: "desc", type: "popularity" },
-    includeAdultGoods: true, storeCode: "123456", storeType: "dostavka", catalogType: "3",
+    includeAdultGoods: true, storeCode: "123456", storeType: "dostavka", catalogType: "2",
   });
   assert.equal(result.products[0].price_kopecks, 16999);
   assert.equal(result.products[0].price_rubles, 169.99);
@@ -92,7 +92,7 @@ test("input validation bounds store code, query, and page size before fetch", as
 });
 
 test("categories use the fixed path and mode-specific query names", async () => {
-  assert.equal(magnitCategoriesUrl("123456", "delivery"), "https://magnit.ru/webgate/v3/categories/store/123456?storetype=dostavka&catalogtype=3");
+  assert.equal(magnitCategoriesUrl("123456", "delivery"), "https://magnit.ru/webgate/v3/categories/store/123456?storetype=dostavka&catalogtype=2");
   assert.equal(magnitCategoriesUrl("123456", "retail"), "https://magnit.ru/webgate/v3/categories/store/123456?storetype=1&catalogtype=1");
   let seen;
   const result = await getMagnitCategories({ storeCode: "123456", mode: "retail", fetchImpl: async (url, init) => { seen = { url, init }; return jsonResponse({ items: [{ id: 1, name: "Молочные", children: [{ id: 2, name: "Сыр" }] }] }); } });
@@ -148,4 +148,26 @@ test("delivery eligibility requires explicit service, target cart, same-store id
     assert.equal(item.cart_addable,false,item.id);
     assert.equal(item.good_id,null);
   }
+});
+
+test("ordinary delivery category and search use observed browser catalogType 2", () => {
+  assert.deepEqual(catalogMode("delivery"), { mode: "delivery", storeType: "dostavka", catalogType: "2" });
+  assert.equal(makeSearchPayload("молоко", "992332", 20, "delivery").catalogType, "2");
+  assert.match(magnitCategoriesUrl("992332", "delivery"), /storetype=dostavka&catalogtype=2$/);
+});
+
+test("ordinary delivery nonweighted product from observed schema exposes Add mapping", () => {
+  // Based on sanitized schema of a successful dostavka catalog search.
+  const product = {
+    id: "1000289065", productId: "1000289065", name: "Пример невесового товара",
+    service: "dostavka", targetCart: "dostavka", storeCode: "992332", catalogType: "2",
+    weighted: { isWeighted: false, minStep: null, shelfWeight: null, step: null },
+    orderProperties: { minOrderQuantity: 1, orderStepQuantity: 1 },
+    isAdditionalActionRequired: false, isBiometryRequired: false,
+    isForAdults: false, needPassport: false, pickupOnly: false,
+  };
+  const [result] = parseProducts({ storeCode: "992332", items: [product] });
+  assert.equal(result.cart_addable, true);
+  assert.equal(result.good_id, product.id);
+  assert.equal(result.offer_id, product.id);
 });
