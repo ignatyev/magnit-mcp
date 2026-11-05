@@ -145,3 +145,63 @@ test("browser-observed cart device headers and null permission marker are replay
   assert.equal(headers.Authorization, undefined);
   assert.equal(headers.Origin, undefined);
 });
+
+
+test("delivery cart uses dostavka headers and reads a different returned store safely", async () => {
+  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" } };
+  const delivery = {
+    formats: [{ itemsCount: 2, service: "dostavka", storeCode: "992332" }],
+    items: [
+      { goodId: "milk", offerId: "milk-offer", goodService: "dostavka", qnty: 1, increment: { unit: "apiece", value: 1 } },
+      { goodId: "bread", offerId: "bread-offer", goodService: "dostavka", goodStoreCode: "992332", qnty: 1 },
+    ],
+    totalBasePrice: 50000, totalFinalPrice: 48000, totalGoodsCount: 2,
+  };
+  let captured;
+  const result = await viewMagnitCart({session:sessionDelivery,storeCode:"992301",mode:"delivery",fetchImpl:async (url,init)=>{
+    captured={url,init}; return response(delivery);
+  }});
+  assert.equal(captured.init.method, "GET");
+  assert.equal(captured.init.headers["x-service"], "dostavka");
+  assert.equal(captured.init.headers["x-store-code"], "992301");
+  assert.equal(result.cart_store_code, "992332");
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].good_service, "dostavka");
+  assert.equal(result.read_only, true);
+  assert.equal(result.totals_lite.applies_to_selected_service, true);
+});
+
+test("mixed carts display only delivery items and cannot clear pending reconciliation", async () => {
+  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" }, cartReconciliationRequired: true };
+  const mixed = {
+    formats: [
+      { itemsCount: 2, service: "dostavka", storeCode: "992332" },
+      { itemsCount: 1, service: "express", storeCode: "233826" },
+    ],
+    items: [
+      { goodId: "delivery-one", offerId: "o1", goodService: "dostavka", qnty: 1 },
+      { goodId: "express-one", offerId: "o2", goodService: "express", qnty: 1 },
+      { goodId: "unknown", offerId: "o3", qnty: 1 },
+    ], totalBasePrice: 1000, totalFinalPrice: 1000, totalGoodsCount: 3,
+  };
+  let reconciled=false, saved=false;
+  const result=await viewMagnitCart({session:sessionDelivery,storeCode:"992301",mode:"delivery",
+    fetchImpl:async()=>response(mixed), saveSession:async()=>{saved=true},
+    operationStore:{ fingerprint:()=> "fake", reconcile:async()=>{reconciled=true} }});
+  assert.deepEqual(result.items.map(x=>x.good_id), ["delivery-one"]);
+  assert.equal(result.unattributed_items_count, 1);
+  assert.equal(result.cart_context_status, "multiple_formats");
+  assert.equal(result.read_only, true);
+  assert.equal(result.totals_lite.applies_to_selected_service, false);
+  assert.equal(reconciled,false);
+  assert.equal(saved,false);
+});
+
+test("delivery cart mutations are refused before any network access", async () => {
+  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" } };
+  let calls=0;
+  await assert.rejects(addMagnitCartItem({session:sessionDelivery,storeCode:"992301",mode:"delivery",
+    goodId:"milk",offerId:"milk",quantity:1,fetchImpl:async()=>{calls++;return response(cart([]))}}),
+  (error)=>error.code==="unsupported_mode");
+  assert.equal(calls,0);
+});
