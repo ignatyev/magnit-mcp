@@ -306,3 +306,35 @@ test("delivery remove preserves remaining items and verifies GET readback", asyn
   assert.equal(result.items.length,1);
   assert.deepEqual(statuses,["complete"]);
 });
+
+
+test("delivery HAR: preserve grams and omit zero-quantity ghost lines on PUT", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992332",observedInBrowser:true}};
+  const format=[{service:"dostavka",storeCode:"992332",itemsCount:3}];
+  const milk={goodId:"milk",offerId:"milk",qnty:1,goodService:"dostavka",increment:{unit:"apiece",value:1}};
+  const meat={goodId:"meat",offerId:"meat",qnty:600,goodService:"dostavka",increment:{unit:"weight",value:300}};
+  const ghost={goodId:"ghost",offerId:"ghost",qnty:0,goodService:"dostavka",increment:{unit:"apiece",value:1}};
+  const added={goodId:"new",offerId:"new",qnty:1,increment:{unit:"apiece",value:1}};
+  const before={formats:format,items:[milk,meat,ghost]};
+  const after={formats:format,items:[milk,meat,added]};
+  const calls=[],statuses=[];
+  const result=await applyMagnitCart({
+    session:delivery,storeCode:"992332",mode:"delivery",requestId:"delivery-zero-ghost-test",
+    operations:[{action:"add",good_id:"new",offer_id:"new",quantity:1}],
+    requireEligible:async()=>{},
+    operationStore:{fingerprint:()=> "fingerprint",inspect:async()=>({replay:false}),
+      assertWritable:async()=>{},begin:async()=>{},finish:async({status})=>statuses.push(status)},
+    fetchImpl:async(_url,init)=>{
+      calls.push(init);return response(calls.length===1?before:after);
+    },
+  });
+  assert.deepEqual(calls.map(x=>x.method),["GET","PUT","GET"]);
+  assert.deepEqual(JSON.parse(calls[1].body),{items:[
+    {goodId:"milk",offerId:"milk",qnty:1},
+    {goodId:"meat",offerId:"meat",qnty:600},
+    {goodId:"new",offerId:"new",qnty:1},
+  ]});
+  assert.deepEqual(statuses,["complete"]);
+  assert.equal(result.cart_context_status,"single_format");
+  assert.equal(result.read_only,false);
+});
