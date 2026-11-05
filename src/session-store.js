@@ -44,7 +44,7 @@ export function extractMagnitSessionFromHar(raw) {
     const storeCode = safeHeaderValue(headers["x-store-code"], 16);
     const bff = safeHeaderValue(headers["x-magnit-bff"], 256);
     if (!service || !/^[A-Za-z0-9_-]+$/.test(service) || !storeCode || !/^\d{4,8}$/.test(storeCode) || !bff) continue;
-    if (service !== "express") { sawUnsupportedContext = true; continue; }
+    if (!["express", "dostavka"].includes(service)) { sawUnsupportedContext = true; continue; }
     const permissionsJwt = safeHeaderValue(headers["x-permissions-jwt"], 8192);
     candidate = {
       ok: true,
@@ -86,7 +86,7 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
         const plain = Buffer.concat([decipher.update(Buffer.from(packed.data, "base64url")), decipher.final()]);
         const session = JSON.parse(plain.toString("utf8"));
         if (typeof session?.cookie !== "string" || !session.cookie) return null;
-        if (session.context != null && (typeof session.context !== "object" || !/^\d{4,8}$/.test(String(session.context.storeCode ?? "")) || session.context.service !== "express" || typeof session.context.bff !== "string" || !session.context.bff)) return null;
+        if (session.context != null && (typeof session.context !== "object" || !/^\d{4,8}$/.test(String(session.context.storeCode ?? "")) || !["express", "dostavka"].includes(session.context.service) || typeof session.context.bff !== "string" || !session.context.bff)) return null;
         return session;
       } catch { return null; }
     },
@@ -95,17 +95,19 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
 }
 
 export function publicSessionState(session) {
-  const contextReady = !!(session?.context?.storeCode && session.context.service === "express");
+  const contextReady = !!(session?.context?.storeCode && ["express", "dostavka"].includes(session.context.service));
   return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false };
 }
 
-export function bindExpressSearchContext(session, storeCode) {
+export function bindSearchContext(session, storeCode, mode = "express") {
   if (!session?.cookie) return session;
   if (typeof storeCode !== "string" || !/^\d{4,8}$/.test(storeCode)) throw new Error("store_code должен содержать 4–8 цифр.");
+  const service = mode === "express" ? "express" : mode === "delivery" ? "dostavka" : null;
+  if (!service) throw new Error("Поддерживаются только доставка и Экспресс.");
   const previous = session.context;
-  const sameStore = previous?.service === "express" && previous.storeCode === storeCode;
+  const sameStore = previous?.service === service && previous.storeCode === storeCode;
   const context = {
-    service: "express",
+    service,
     storeCode,
     bff: previous?.bff || "1",
     permissionsJwt: sameStore ? previous.permissionsJwt || null : null,
@@ -117,4 +119,8 @@ export function bindExpressSearchContext(session, storeCode) {
     if (typeof previous?.[key] === "string") context[key] = previous[key];
   }
   return { ...session, context };
+}
+
+export function bindExpressSearchContext(session, storeCode) {
+  return bindSearchContext(session, storeCode, "express");
 }

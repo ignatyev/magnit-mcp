@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEncryptedSessionStore, extractMagnitSessionFromHar, bindExpressSearchContext, publicSessionState } from "../src/session-store.js";
+import { createEncryptedSessionStore, extractMagnitSessionFromHar, bindExpressSearchContext, bindSearchContext, publicSessionState } from "../src/session-store.js";
 
 const syntheticEntry = ({ url = "https://magnit.ru/webgate/v1/carts/lite", cookie, service = "express" } = {}) => ({
   request: {
@@ -83,4 +83,30 @@ test("search retains same-store browser cart context but invalidates verified fl
   assert.equal(switched.context.deviceId, "synthetic-device");
   assert.equal(switched.context.permissionsJwt, null);
   assert.equal(publicSessionState(switched).cart_context_ready, false);
+});
+
+
+test("delivery browser session and store code are preserved by the encrypted session store", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "magnit-delivery-session-"));
+  try {
+    const store = createEncryptedSessionStore({ secret: "synthetic owner secret of sufficient length for test", filename: join(dir, "session.enc") });
+    const delivery = { cookie: "synthetic-cookie-value", context: { service: "dostavka", storeCode: "992301", bff: "1", observedInBrowser: true, deviceId: "synthetic-device" } };
+    await store.save(delivery);
+    assert.deepEqual(await store.load(), delivery);
+    assert.equal(publicSessionState(await store.load()).cart_context_ready, true);
+    const same = bindSearchContext(delivery, "992301", "delivery");
+    assert.equal(same.context.observedInBrowser, true);
+    const switched = bindSearchContext(delivery, "123456", "delivery");
+    assert.equal(switched.context.observedInBrowser, false);
+    assert.equal(switched.context.deviceId, "synthetic-device");
+    const express = bindSearchContext(delivery, "992301", "express");
+    assert.equal(express.context.service, "express");
+    assert.equal(express.context.observedInBrowser, false);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});
+
+test("HAR parser recognizes observed delivery cart context", () => {
+  const r=extractMagnitSessionFromHar(JSON.stringify({ log: { entries: [syntheticEntry({ cookie:"sid=synthetic", service:"dostavka" })] } }));
+  assert.equal(r.ok,true);
+  assert.equal(r.session.context.service,"dostavka");
 });

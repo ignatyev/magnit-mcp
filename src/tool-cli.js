@@ -3,7 +3,7 @@ const [name,...values]=process.argv.slice(2);
 const fields={
   status:[],search_products:["query","store_code","mode","limit"],list_categories:["store_code","mode"],
   product_details:["product_id","store_code"],shopping_context:[],order_history:["page","limit"],
-  view_cart:["store_code"],add_to_cart:["query","store_code","good_id","offer_id","quantity","request_id"],
+  view_cart:["store_code","mode"],add_to_cart:["query","store_code","good_id","offer_id","quantity","request_id"],
   apply_cart:["store_code","operations","request_id"]
 };
 try{
