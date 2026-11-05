@@ -30,8 +30,8 @@ function integer(x, fallback, upper) {
   if(!Number.isSafeInteger(n)||n<1||n>upper) throw new MagnitApiError("invalid_arguments","Invalid integer");
   return n;
 }
-function store(args, write = false) {
-  const mode = args.mode || "express";
+function store(args) {
+  const mode = args.mode || "delivery";
   if(!["express","delivery"].includes(mode))
     throw new MagnitApiError("unsupported_mode", "Only delivery or express cart is supported");
   return { code: validateStoreCode(args.store_code), mode };
@@ -71,7 +71,7 @@ export async function runTool(name,args={}) {
     return viewMagnitCart({session:await sessions.load(),storeCode:code,mode,operationStore:journal,saveSession:s=>sessions.save(s)});
   });
   if(name==="add_to_cart"||name==="apply_cart")return locked(async()=>{
-    const {code,mode}=store(args,true);
+    const {code,mode}=store(args);
     const registry=createCartEligibilityRegistry();
     const operations=name==="add_to_cart"?[{action:"add",good_id:args.good_id,offer_id:args.offer_id,quantity:args.quantity,query:args.query}]:args.operations;
     if(!Array.isArray(operations)||operations.length<1||operations.length>20)throw new MagnitApiError("invalid_arguments","1–20 operations required.");
