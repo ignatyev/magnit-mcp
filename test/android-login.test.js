@@ -115,7 +115,7 @@ test("Android login observes official auth on its own CDP tab, saves cookie, and
   assert.equal(saved.browserCartSnapshot.raw_item_count,1);
   assert.equal(saved.browserCartSnapshot.raw_format_count,1);
   assert.equal(saved.browserCartSnapshot.selected_format_count,1);
-  assert.equal(saved.browserCartSnapshot.browser_cookie_count,null);
+  assert.equal(saved.browserCartSnapshot.browser_cookie_count,1);
   assert.equal(saved.browserCartSnapshot.request_header_names.includes("x-service"),true);
   assert.equal(saved.browserCartSnapshot.request_header_names.includes("cookie"),true);
   assert.equal(JSON.stringify(saved).includes("synthetic-secret-id"),false);
