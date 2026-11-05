@@ -5,6 +5,7 @@ import {
   extractCartRequestContext,
   isMagnitAuthenticated,
   magnitCookieHeader,
+  extractObservedCartCookie,
   safeObservedCartSnapshot,
   selectAdbDevice,
   validateDebugWebSocket,
@@ -77,7 +78,7 @@ class FakeWebSocket {
         const event=(method,params)=>this.emit("message",{data:JSON.stringify({method,params,sessionId:"session-id"})});
         queueMicrotask(()=>{
           event("Network.requestWillBeSent",{requestId:"cart-1",request:{method:"GET",url:CART_URL,headers:{"x-service":"express","x-store-code":"123456","x-magnit-bff":"synthetic-context"}}});
-          event("Network.requestWillBeSentExtraInfo",{requestId:"cart-1",headers:{"x-device-id":"synthetic-device-uuid","x-device-tag":"synthetic-device-tag","x-app-version":"2026.11.3-14.45","x-platform-version":"Android Chrome 156","user-agent":"synthetic-browser-ua","x-permissions-jwt":"null","Cookie":"never-expose"}});
+          event("Network.requestWillBeSentExtraInfo",{requestId:"cart-1",headers:{"x-device-id":"synthetic-device-uuid","x-device-tag":"synthetic-device-tag","x-app-version":"2026.11.3-14.45","x-platform-version":"Android Chrome 156","user-agent":"synthetic-browser-ua","x-permissions-jwt":"null","Cookie":"sid=browser-cart-verified; ctx=express; additional=required"}});
           event("Network.responseReceived",{requestId:"cart-1",response:{status:200,url:CART_URL}});
           event("Network.loadingFinished",{requestId:"cart-1"});
           event("Network.requestWillBeSent",{requestId:"auth-1",request:{method:"GET",url:"https://magnit.ru/_auth/session"}});
@@ -109,13 +110,15 @@ test("Android login observes official auth on its own CDP tab, saves cookie, and
   await login.start();
   for(let i=0;i<100&&login.snapshot().status!=="ready";i++)await new Promise(resolve=>setTimeout(resolve,5));
   assert.equal(login.snapshot().status,"ready");
-  assert.equal(saved.cookie,"sid=synthetic-cookie");
+  assert.equal(saved.cookie,"sid=browser-cart-verified; ctx=express; additional=required");
+  assert.equal(saved.cookieSource,"official_cart_request");
   assert.deepEqual(saved.context,{service:"express",storeCode:"123456",bff:"synthetic-context",permissionsJwt:"null",observedInBrowser:true,deviceId:"synthetic-device-uuid",deviceTag:"synthetic-device-tag",appVersion:"2026.11.3-14.45",platformVersion:"Android Chrome 156",userAgent:"synthetic-browser-ua"});
-  assert.equal(JSON.stringify(saved).includes("never-expose"), false);
+  assert.equal(JSON.stringify(login.snapshot()).includes("browser-cart-verified"), false);
+  assert.equal(JSON.stringify(saved.browserCartSnapshot).includes("browser-cart-verified"), false);
   assert.equal(saved.browserCartSnapshot.raw_item_count,1);
   assert.equal(saved.browserCartSnapshot.raw_format_count,1);
   assert.equal(saved.browserCartSnapshot.selected_format_count,1);
-  assert.equal(saved.browserCartSnapshot.browser_cookie_count,1);
+  assert.equal(saved.browserCartSnapshot.browser_cookie_count,3);
   assert.equal(saved.browserCartSnapshot.request_header_names.includes("x-service"),true);
   assert.equal(saved.browserCartSnapshot.request_header_names.includes("cookie"),true);
   assert.equal(JSON.stringify(saved).includes("synthetic-secret-id"),false);
@@ -195,4 +198,16 @@ test("browser metadata includes only known names and cookie count, not token val
   assert.equal(snap.browser_cookie_count,3);
   assert.equal(JSON.stringify(snap).includes("Authorization"),false);
   assert.equal(JSON.stringify(snap).includes("x-unknown-secret"),false);
+});
+
+test("observed cart Cookie preserves exact browser header order and is strictly validated",()=>{
+  const cookie="sid=abc; feature=on; sid=other; encoded=a%3Db";
+  assert.equal(extractObservedCartCookie({Cookie:cookie}),cookie);
+  assert.equal(extractObservedCartCookie({"cOoKiE":cookie}),cookie);
+  assert.equal(extractObservedCartCookie({Cookie:"sid"}),null);
+  assert.equal(extractObservedCartCookie({Cookie:"sid=value\r\nx-secret: bad"}),null);
+  assert.equal(extractObservedCartCookie({Cookie:"sid=ok",cookie:"sid=other"}),null);
+  assert.equal(extractObservedCartCookie({Cookie:"sid="+ "a".repeat(8193)}),null);
+  assert.equal(extractObservedCartCookie({Cookie:"sid=abc; bad-value"}),null);
+  assert.equal(extractObservedCartCookie({Authorization:"secret"}),null);
 });
