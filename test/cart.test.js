@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addMagnitCartItem, applyMagnitCart, viewMagnitCart } from "../src/cart.js";
+import { addMagnitCartItem, applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders } from "../src/cart.js";
 
 const session = { cookie: "sid=synthetic-cookie", context: { service: "express", storeCode: "123456", bff: "synthetic-bff", permissionsJwt: null, observedInBrowser: true } };
 const cart = (items, formatCount = items.length) => ({ items, formats: [{ itemsCount: formatCount, service: "express", storeCode: "123456" }], totalBasePrice: 12345, totalFinalPrice: 11111, totalGoodsCount: items.length });
@@ -497,4 +497,46 @@ test("Express readback mismatch remains ambiguous after PUT, never retries write
   }), err => err.code === "ambiguous_result");
   assert.deepEqual(calls, ["GET", "PUT", "GET"]);
   assert.deepEqual(states, ["ambiguous"]);
+});
+
+
+test("GET header comparison is read-only and does not leak cookies or change cart", async () => {
+  const calls = [];
+  const data = {
+    items: [{ goodId: "a", offerId: "a", qnty: 1 }],
+    formats: [{ service: "express", storeCode: "230668", itemsCount: 1 }],
+  };
+  const out = await diagnoseMagnitCartHeaders({
+    session: { cookie: "sid=synthetic", context: { service: "express", storeCode: "233472", bff: "1", observedInBrowser: true } },
+    storeCode: "233472", mode: "express",
+    fetchImpl: async (_url, options) => {
+      calls.push(options);
+      assert.equal(options.method, "GET");
+      return response(calls.length === 1 ? { items: [{ goodId: "orphan", offerId: "orphan", qnty: 1 }], formats: [] } : data);
+    },
+  });
+  assert.deepEqual(calls.map(x => x.method), ["GET", "GET"]);
+  assert.equal(calls[0].headers["x-new-magnit"], "true");
+  assert.equal(calls[1].headers["x-new-magnit"], undefined);
+  assert.equal(calls[0].headers["x-service"], "express");
+  assert.equal(calls[1].headers["x-store-code"], "233472");
+  assert.equal(out.legacy.raw_item_count, 1);
+  assert.equal(out.legacy.raw_format_count, 0);
+  assert.equal(out.chrome_headers.raw_item_count, 1);
+  assert.equal(out.chrome_headers.raw_format_count, 1);
+  assert.equal(out.changes_written, false);
+  assert.equal(JSON.stringify(out).includes("sid=synthetic"), false);
+  assert.equal(JSON.stringify(out).includes("orphan"), false);
+});
+
+test("diagnostic GET errors do not throw, write or expose upstream content", async () => {
+  let count = 0;
+  const out = await diagnoseMagnitCartHeaders({
+    session, storeCode: "123456", mode: "express",
+    fetchImpl: async () => { count++; return response({ code: "serverError", message: "secret" }, 400); },
+  });
+  assert.equal(count, 2);
+  assert.equal(out.legacy.ok, false);
+  assert.equal(out.chrome_headers.ok, false);
+  assert.equal(JSON.stringify(out).includes("secret"), false);
 });
