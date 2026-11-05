@@ -7,7 +7,11 @@ const execFile = promisify(execFileCallback);
 const CART_URL = "https://magnit.ru/webgate/v1/carts/lite";
 const CART_PATH = "/webgate/v1/carts/lite";
 const MAX_DEBUG_JSON = 128_000;
-const HEADER_ALLOWLIST = new Set(["x-service", "x-store-code", "x-magnit-bff", "x-permissions-jwt"]);
+const HEADER_ALLOWLIST = new Set([
+  "x-service", "x-store-code", "x-magnit-bff", "x-permissions-jwt",
+  "x-device-id", "x-device-tag", "x-app-version", "x-platform-version",
+  "x-client-name", "x-device-platform", "x-new-magnit", "user-agent",
+]);
 const SAFE_LOGIN_FAILURES = new Set(["setup_required", "adb_missing", "adb_command_failed", "adb_forward_failed", "chrome_debug_endpoint_unavailable", "chrome_target_create_failed", "chrome_target_invalid", "chrome_target_attach_failed", "chrome_tab_activate_failed", "cdp_connect_failed", "cdp_network_enable_failed", "chrome_tab_navigate_failed", "login_unavailable"]);
 
 function safeContext(headers) {
@@ -21,20 +25,41 @@ function safeContext(headers) {
   if (normalized["x-service"] !== "express") return null;
   try { validateStoreCode(normalized["x-store-code"]); } catch { return null; }
   if (!normalized["x-magnit-bff"]) return null;
-  return {
+  const result = {
     service: normalized["x-service"],
     storeCode: normalized["x-store-code"],
     bff: normalized["x-magnit-bff"],
-    permissionsJwt: normalized["x-permissions-jwt"]?.length >= 64 ? normalized["x-permissions-jwt"] : null,
+    permissionsJwt: normalized["x-permissions-jwt"] === "null" || normalized["x-permissions-jwt"]?.length >= 64 ? normalized["x-permissions-jwt"] : null,
+    observedInBrowser: true,
   };
+  for (const [header, field, max] of [
+    ["x-device-id", "deviceId", 128],
+    ["x-device-tag", "deviceTag", 128],
+    ["x-app-version", "appVersion", 64],
+    ["x-platform-version", "platformVersion", 96],
+    ["user-agent", "userAgent", 512],
+  ]) {
+    const value = normalized[header];
+    if (typeof value === "string" && value.length <= max) result[field] = value;
+  }
+  return result;
 }
 
 export function extractCartRequestContext(method, requestUrl, headers) {
   if (typeof requestUrl !== "string" || !["GET", "PUT"].includes(String(method).toUpperCase())) return null;
   let url;
   try { url = new URL(requestUrl); } catch { return null; }
-  if (url.origin !== "https://magnit.ru" || url.username || url.password || url.pathname !== CART_PATH) return null;
+  if (url.origin !== "https://magnit.ru" || url.username || url.password || url.pathname !== CART_PATH || url.search || url.hash) return null;
   return safeContext(headers);
+}
+
+function allowedCartHeaders(headers) {
+  const safe = Object.create(null);
+  for (const [name, value] of Object.entries(headers || {})) {
+    const key = name.toLowerCase();
+    if (HEADER_ALLOWLIST.has(key) && typeof value === "string" && value.length > 0 && value.length <= 8192 && !/[\r\n\0]/.test(value)) safe[key] = value;
+  }
+  return safe;
 }
 
 export function magnitCookieHeader(cookies) {
@@ -190,8 +215,9 @@ class CdpClient extends EventEmitter {
 }
 
 export class AndroidMagnitLogin {
-  constructor({ saveSession, requestedSerial = process.env.ANDROID_DEVICE_SERIAL || "", exec = async (args) => (await execFile("adb", args, { encoding: "utf8", timeout: 12_000, maxBuffer: 64 * 1024 })).stdout, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, intervalMs = 1500, timeoutMs = 5 * 60_000 }) {
+  constructor({ saveSession, requireCartContext = false, requestedSerial = process.env.ANDROID_DEVICE_SERIAL || "", exec = async (args) => (await execFile("adb", args, { encoding: "utf8", timeout: 12_000, maxBuffer: 64 * 1024 })).stdout, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, intervalMs = 1500, timeoutMs = 5 * 60_000 }) {
     this.saveSession = saveSession;
+    this.requireCartContext = requireCartContext;
     this.requestedSerial = requestedSerial;
     this.exec = exec;
     this.fetchImpl = fetchImpl;
@@ -202,6 +228,7 @@ export class AndroidMagnitLogin {
     this.started = false;
     this.closed = false;
     this.authRequestIds = new Map();
+    this.cartRequests = new Map();
     this.sessionSaveStarted = false;
     this.authenticated = false;
     this.verifying = false;
@@ -262,9 +289,12 @@ export class AndroidMagnitLogin {
       await this.cdp.send("Target.activateTarget", { targetId: this.targetId });
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       this.cdp.on("Network.requestWillBeSent", (params, sessionId) => { if (sessionId === this.sessionId) this.observeRequest(params); });
+      this.cdp.on("Network.requestWillBeSentExtraInfo", (params, sessionId) => { if (sessionId === this.sessionId) this.observeExtraHeaders(params); });
       this.cdp.on("Network.responseReceived", (params, sessionId) => { if (sessionId === this.sessionId) this.observeResponse(params); });
       this.cdp.on("Network.loadingFinished", (params, sessionId) => { if (sessionId === this.sessionId) void this.observeFinished(params); });
-      this.cdp.on("Network.loadingFailed", (params, sessionId) => { if (sessionId === this.sessionId) this.authRequestIds.delete(params.requestId); });
+      this.cdp.on("Network.loadingFailed", (params, sessionId) => {
+        if (sessionId === this.sessionId) { this.authRequestIds.delete(params.requestId); this.cartRequests.delete(params.requestId); }
+      });
       stage = "cdp_enable";
       await this.cdp.send("Network.enable", {}, 10_000, this.sessionId);
       await this.cdp.send("Page.enable", {}, 10_000, this.sessionId);
@@ -273,7 +303,9 @@ export class AndroidMagnitLogin {
       const navigation = await this.cdp.send("Page.navigate", { url: "https://magnit.ru/" }, 15_000, this.sessionId);
       if (typeof navigation?.errorText === "string" && navigation.errorText) throw new Error("page_navigation_failed");
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
-      this.setState("waiting", "Завершите вход в официальной вкладке Магнит. Если вы уже вошли в Chrome, дождитесь проверки.");
+      this.setState("waiting", this.requireCartContext
+        ? "Откройте корзину выбранного Экспресс-магазина в официальной вкладке Магнит. Сохраним параметры только после успешного чтения корзины сайтом."
+        : "Завершите вход в официальной вкладке Магнит. Если вы уже вошли в Chrome, дождитесь проверки.");
       this.deadline = Date.now() + this.timeoutMs;
       this.timer = setInterval(() => void this.pollCookies(), this.intervalMs);
       void this.pollCookies();
@@ -290,8 +322,11 @@ export class AndroidMagnitLogin {
     const requestId = params?.requestId;
     if (typeof requestId === "string") this.authRequestIds.delete(requestId);
     if (String(request?.method).toUpperCase() !== "GET") return;
-    const context = extractCartRequestContext(request?.method, request?.url, request?.headers);
-    if (context) this.context = context;
+    // Never trust a cart request until the official tab receives HTTP 200.
+    if (typeof requestId === "string" && typeof request?.url === "string" && request.url === CART_URL) {
+      if (this.cartRequests.size >= 32) this.cartRequests.delete(this.cartRequests.keys().next().value);
+      this.cartRequests.set(requestId, { headers: allowedCartHeaders(request.headers), confirmed: false });
+    }
     if (typeof params?.requestId === "string" && typeof request?.url === "string") {
       try {
         const url = new URL(request.url);
@@ -303,8 +338,23 @@ export class AndroidMagnitLogin {
     }
   }
 
+  observeExtraHeaders(params) {
+    const pending = this.cartRequests.get(params?.requestId);
+    if (pending) {
+      Object.assign(pending.headers, allowedCartHeaders(params.headers));
+      if (pending.confirmed) this.context = safeContext(pending.headers) || this.context;
+    }
+  }
+
   observeResponse(params) {
     const response = params?.response;
+    const pending = this.cartRequests.get(params?.requestId);
+    if (pending) {
+      if (response?.status === 200 && response.url === CART_URL) {
+        pending.confirmed = true;
+        this.context = safeContext(pending.headers) || this.context;
+      } else this.cartRequests.delete(params.requestId);
+    }
     if (typeof params?.requestId !== "string" || !this.authRequestIds.has(params.requestId)) return;
     if (response?.status !== 200 || typeof response.url !== "string") { this.authRequestIds.delete(params.requestId); return; }
     let url;
@@ -316,6 +366,9 @@ export class AndroidMagnitLogin {
   async observeFinished(params) {
     const requestId = params?.requestId;
     if (typeof requestId !== "string") return;
+    const pendingCart = this.cartRequests.get(requestId);
+    if (pendingCart?.confirmed) this.context = safeContext(pendingCart.headers) || this.context;
+    this.cartRequests.delete(requestId);
     const confirmed = this.authRequestIds.get(requestId) === true;
     this.authRequestIds.delete(requestId);
     if (!confirmed) return;
@@ -337,6 +390,7 @@ export class AndroidMagnitLogin {
       return;
     }
     if (!this.authenticated) return;
+    if (this.requireCartContext && !this.context) return;
     this.polling=true;
     try {
       const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] }, 10_000, this.sessionId);
