@@ -46,6 +46,27 @@ function cartHeaders(session) {
   return headers;
 }
 
+// Safe for export: inspect only metadata, never a Cookie, token or header value.
+export function describeMagnitCartRequest(session) {
+  if(!session?.cookie || !session?.context) return null;
+  const h=cartHeaders(session);
+  const raw=String(session.cookie);
+  const cookieCount=raw.split(";").filter(pair=>pair.trim().includes("=")).length;
+  const agent=String(h["User-Agent"] || "");
+  return {
+    method:"GET", endpoint_path:"/webgate/v1/carts/lite",
+    header_names:Object.keys(h).map(x=>x.toLowerCase()).sort(),
+    cookie_count:cookieCount,
+    cookie_present:cookieCount>0,
+    user_agent_family:/android/i.test(agent)?"android":/windows|macintosh|linux/i.test(agent)?"desktop":agent?"other":"not_captured",
+    device_id_present:Boolean(h["x-device-id"]),
+    device_tag_present:Boolean(h["x-device-tag"]),
+    app_version_present:Boolean(h["x-app-version"]),
+    permissions_kind:h["x-permissions-jwt"]==="null"?"null_marker":"token",
+    browser_context_verified:session.context.observedInBrowser===true,
+  };
+}
+
 async function boundedJson(response) {
   if (!response.body) throw new MagnitApiError("invalid_response", "Магнит вернул пустой ответ корзины.");
   const reader = response.body.getReader();
