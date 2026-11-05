@@ -73,6 +73,18 @@ export function createCartOperationStore({ secret, filename = "./data/cart-opera
       record.status = status; record.result = result; record.verifiedAt = status === "complete" ? new Date().toISOString() : null; record.settledAt = ["complete", "reconciled"].includes(status) ? Date.now() : null;
       await save(doc);
     }); },
+    // Read-only diagnostic summary: no operation IDs, result payloads or secrets.
+    summary({ sessionFingerprint, storeCode }) { return serialized(async () => {
+      const doc = await load();
+      const relevant = doc.records.filter(r=>r.sessionFingerprint===sessionFingerprint && r.storeCode===storeCode);
+      return {
+        pending: relevant.filter(r=>r.status==="pending").length,
+        ambiguous: relevant.filter(r=>r.status==="ambiguous").length,
+        complete: relevant.filter(r=>r.status==="complete").length,
+        reconciled: relevant.filter(r=>r.status==="reconciled").length,
+        write_blocked: relevant.some(r=>UNRESOLVED.has(r.status)),
+      };
+    }); },
     reconcile({ sessionFingerprint, storeCode, cartSummary }) { return serialized(async () => {
       const doc = await load(); let changed = false;
       for (const record of doc.records) if (record.sessionFingerprint === sessionFingerprint && record.storeCode === storeCode && UNRESOLVED.has(record.status)) {
