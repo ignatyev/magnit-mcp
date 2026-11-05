@@ -1,7 +1,7 @@
 import { mkdir, open, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { getMagnitCategories, getMagnitProductDetails, searchMagnit, validateStoreCode, MagnitApiError } from "./magnit-api.js";
-import { applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders, describeMagnitCartRequest } from "./cart.js";
+import { applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders, describeMagnitCartRequest, diagnoseMagnitTransportMatrix } from "./cart.js";
 import { createEncryptedSessionStore, publicSessionState, bindSearchContext } from "./session-store.js";
 import { createCartOperationStore } from "./cart-operation-store.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
@@ -121,6 +121,11 @@ export async function runTool(name,args={}) {
       report.cart_get=await diagnoseMagnitCartHeaders({session:selected,storeCode:code,mode});
     } catch(cause) {
       report.cart_get={ok:false,error_code:safeError(cause)};
+    }
+    try {
+      report.transport_matrix=await diagnoseMagnitTransportMatrix({session:selected,storeCode:code,mode});
+    } catch(cause) {
+      report.transport_matrix={ok:false,error_code:safeError(cause)};
     }
     try {
       const catalog=await searchMagnit({query:"молоко",storeCode:code,mode,limit:20});

@@ -11,6 +11,8 @@ const HEADER_ALLOWLIST = new Set([
   "x-service", "x-store-code", "x-magnit-bff", "x-permissions-jwt",
   "x-device-id", "x-device-tag", "x-app-version", "x-platform-version",
   "x-client-name", "x-device-platform", "x-new-magnit", "user-agent",
+  "accept-language", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+  "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "priority",
 ]);
 // Only fixed, non-sensitive header NAMES enter diagnostic snapshots, never values.
 const DIAGNOSTIC_HEADER_NAMES = new Set([
@@ -34,6 +36,26 @@ function safeBrowserCookieCount(headers) {
 }
 const SAFE_LOGIN_FAILURES = new Set(["setup_required", "adb_missing", "adb_command_failed", "adb_forward_failed", "chrome_debug_endpoint_unavailable", "chrome_target_create_failed", "chrome_target_invalid", "chrome_target_attach_failed", "chrome_tab_activate_failed", "cdp_connect_failed", "cdp_network_enable_failed", "chrome_tab_navigate_failed", "login_unavailable"]);
 
+// Only these noncredential browser headers can be replayed by read-only probes.
+export const SAFE_CHROME_PARITY_HEADERS = new Set([
+  "accept-language", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+  "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "priority",
+]);
+export function pickSafeChromeParityHeaders(headers) {
+  const out=Object.create(null);
+  for(const [key,val] of Object.entries(headers||{})) {
+    const name=key.toLowerCase();
+    if(!SAFE_CHROME_PARITY_HEADERS.has(name) || typeof val!=="string" ||
+      val.length>180 || !/^[\x20-\x7e]+$/.test(val)) continue;
+    if(name==="sec-fetch-mode" && val!=="cors") continue;
+    if(name==="sec-fetch-site" && val!=="same-origin") continue;
+    if(name==="sec-fetch-dest" && val!=="empty") continue;
+    if(name==="sec-ch-ua-mobile" && !["?0","?1"].includes(val)) continue;
+    out[name]=val;
+  }
+  return out;
+}
+
 function safeContext(headers) {
   const normalized = Object.create(null);
   for (const [key, value] of Object.entries(headers || {})) {
@@ -52,6 +74,8 @@ function safeContext(headers) {
     permissionsJwt: normalized["x-permissions-jwt"] === "null" || normalized["x-permissions-jwt"]?.length >= 64 ? normalized["x-permissions-jwt"] : null,
     observedInBrowser: true,
   };
+  const replay = pickSafeChromeParityHeaders(normalized);
+  if(Object.keys(replay).length) result.browserParityHeaders=replay;
   for (const [header, field, max] of [
     ["x-device-id", "deviceId", 128],
     ["x-device-tag", "deviceTag", 128],
