@@ -29,6 +29,9 @@ test("CDP websocket and observed cart context are pinned to exact local/Magnit e
   assert.equal(extractCartRequestContext("GET", "https://magnit.ru:444/webgate/v1/carts/lite", headers), null);
   assert.equal(extractCartRequestContext("GET", "https://magnit.ru.attacker.example/webgate/v1/carts/lite", headers), null);
   assert.equal(extractCartRequestContext("POST", CART_URL, headers), null);
+  const delivery = extractCartRequestContext("GET", CART_URL, { ...headers, "X-Service": "dostavka", "X-Store-Code": "992301" });
+  assert.equal(delivery.service, "dostavka");
+  assert.equal(delivery.storeCode, "992301");
 });
 
 test("only secure cookies pinned to magnit.ru cart URL are serialized", () => {
