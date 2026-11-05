@@ -309,6 +309,7 @@
           "offer_id",
           "quantity",
           "request_id",
+          "mode",
           "mode"
         ],
         "additionalProperties": false
@@ -320,7 +321,7 @@
         "call_template_type": "cli",
         "commands": [
           {
-            "command": "node --env-file-if-exists=.env src/tool-cli.js add_to_cart UTCP_ARG_query_UTCP_END UTCP_ARG_store_code_UTCP_END UTCP_ARG_good_id_UTCP_END UTCP_ARG_offer_id_UTCP_END UTCP_ARG_quantity_UTCP_END UTCP_ARG_request_id_UTCP_END UTCP_ARG_mode_UTCP_END"
+            "command": "node --env-file-if-exists=.env src/tool-cli.js add_to_cart UTCP_ARG_query_UTCP_END UTCP_ARG_store_code_UTCP_END UTCP_ARG_good_id_UTCP_END UTCP_ARG_offer_id_UTCP_END UTCP_ARG_quantity_UTCP_END UTCP_ARG_request_id_UTCP_END UTCP_ARG_mode_UTCP_END UTCP_ARG_mode_UTCP_END"
           }
         ],
         "working_dir": "."
@@ -359,6 +360,7 @@
           "store_code",
           "operations",
           "request_id",
+          "mode",
           "mode"
         ],
         "additionalProperties": false
@@ -370,7 +372,7 @@
         "call_template_type": "cli",
         "commands": [
           {
-            "command": "node --env-file-if-exists=.env src/tool-cli.js apply_cart UTCP_ARG_store_code_UTCP_END UTCP_ARG_operations_UTCP_END UTCP_ARG_request_id_UTCP_END UTCP_ARG_mode_UTCP_END"
+            "command": "node --env-file-if-exists=.env src/tool-cli.js apply_cart UTCP_ARG_store_code_UTCP_END UTCP_ARG_operations_UTCP_END UTCP_ARG_request_id_UTCP_END UTCP_ARG_mode_UTCP_END UTCP_ARG_mode_UTCP_END"
           }
         ],
         "working_dir": "."
