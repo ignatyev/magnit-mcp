@@ -187,6 +187,12 @@ function cartView(data, context) {
     formats,
     selected_formats: selectedFormats,
     items,
+    // Redacted shape diagnostics: counts and store codes only, no cart IDs,
+    // cookies, delivery address or private upstream response text.
+    raw_item_count: data.items.length,
+    raw_format_count: data.formats.length,
+    excluded_other_service_count: data.items.length - items.length - unattributed,
+    browser_context_verified: context.observedInBrowser === true,
     unattributed_items_count: unattributed,
     totals_lite,
   };
