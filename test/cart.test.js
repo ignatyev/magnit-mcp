@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { addMagnitCartItem, applyMagnitCart, viewMagnitCart } from "../src/cart.js";
 
-const session = { cookie: "sid=synthetic-cookie", context: { service: "express", storeCode: "123456", bff: "synthetic-bff", permissionsJwt: null } };
+const session = { cookie: "sid=synthetic-cookie", context: { service: "express", storeCode: "123456", bff: "synthetic-bff", permissionsJwt: null, observedInBrowser: true } };
 const cart = (items, formatCount = items.length) => ({ items, formats: [{ itemsCount: formatCount, service: "express", storeCode: "123456" }], totalBasePrice: 12345, totalFinalPrice: 11111, totalGoodsCount: items.length });
 const response = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
@@ -422,4 +422,79 @@ test("delivery readback ignores only zero-quantity tombstones, never extra posit
     assert.equal(n, 3);
     assert.deepEqual(statuses, [scenario.expectedStatus], scenario.name);
   }
+});
+
+
+test("Express mutation requires a browser-verified exact request store", async () => {
+  const unsynced = { cookie: session.cookie, context: { ...session.context, observedInBrowser: false } };
+  let calls = 0;
+  await assert.rejects(applyMagnitCart({
+    session: unsynced, storeCode: "123456", mode: "express", requestId: "express-not-synced-001",
+    operations: [{ action: "add", good_id: "milk", offer_id: "milk", quantity: 1 }],
+    fetchImpl: async () => { calls++; return response(cart([])); },
+  }), err => err.code === "express_context_unverified");
+  assert.equal(calls, 0);
+});
+
+test("Express HAR: request store differs from format store, existing unlabeled line is retained, independent GET verifies", async () => {
+  const express = { cookie: session.cookie, context: { ...session.context, storeCode: "233472", observedInBrowser: true } };
+  const formats = [{ service: "express", storeCode: "230668", itemsCount: 2 }];
+  const beforeItems = [
+    { goodId: "3414400005", offerId: "3414400005", qnty: 800, goodService: "express" },
+    { goodId: "1444500129", offerId: "1444500129", qnty: 1200, goodService: "express" },
+    { goodId: "9039215501", offerId: "9039215501", qnty: 800 },
+  ];
+  const afterItems = [...beforeItems, { goodId: "milk", offerId: "milk", qnty: 1, goodService: "express" }];
+  const calls = [], journal = [];
+  const result = await applyMagnitCart({
+    session: express, storeCode: "233472", mode: "express", requestId: "express-har-store-difference",
+    operations: [{ action: "add", good_id: "milk", offer_id: "milk", quantity: 1 }],
+    requireEligible: async () => {},
+    operationStore: {
+      fingerprint: () => "fake", inspect: async () => ({ replay: false }),
+      assertWritable: async () => {}, begin: async () => {},
+      finish: async ({ status }) => journal.push(status),
+    },
+    fetchImpl: async (_url, init) => {
+      calls.push(init);
+      assert.equal(init.headers["x-store-code"], "233472");
+      assert.equal(init.headers["x-service"], "express");
+      if (calls.length === 1) return response({ items: beforeItems, formats });
+      if (calls.length === 2) {
+        assert.deepEqual(JSON.parse(init.body), { items: [
+          { goodId: "3414400005", offerId: "3414400005", qnty: 800 },
+          { goodId: "1444500129", offerId: "1444500129", qnty: 1200 },
+          { goodId: "9039215501", offerId: "9039215501", qnty: 800 },
+          { goodId: "milk", offerId: "milk", qnty: 1 },
+        ] });
+        // A successful Express PUT can return a transient or incomplete shape.
+        return response({ items: [...beforeItems], formats });
+      }
+      return response({ items: afterItems, formats: [{ ...formats[0], itemsCount: 3 }] });
+    },
+  });
+  assert.deepEqual(calls.map(x => x.method), ["GET", "PUT", "GET"]);
+  assert.deepEqual(journal, ["complete"]);
+  assert.equal(result.mutation, "applied_and_verified");
+  assert.equal(result.cart_store_code, "230668");
+  assert.equal(result.request_store_code, "233472");
+  assert.equal(result.items.length, 4);
+});
+
+test("Express readback mismatch remains ambiguous after PUT, never retries write", async () => {
+  const formats = [{ service: "express", storeCode: "123456", itemsCount: 0 }];
+  const calls = [], states = [];
+  await assert.rejects(applyMagnitCart({
+    session, storeCode: "123456", mode: "express", requestId: "express-no-readback-001",
+    operations: [{ action: "add", good_id: "milk", offer_id: "milk", quantity: 1 }],
+    requireEligible: async () => {},
+    operationStore: {
+      fingerprint: () => "fake", inspect: async () => ({ replay: false }),
+      assertWritable: async () => {}, begin: async () => {},
+      finish: async ({ status }) => states.push(status),
+    },
+    fetchImpl: async (_url, init) => { calls.push(init.method); return response({ items: [], formats }); },
+  }), err => err.code === "ambiguous_result");
+  assert.deepEqual(calls, ["GET", "PUT", "GET"]);
+  assert.deepEqual(states, ["ambiguous"]);
 });
