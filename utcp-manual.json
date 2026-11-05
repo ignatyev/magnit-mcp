@@ -1,0 +1,356 @@
+{
+  "utcp_version": "1.0.0",
+  "manual_version": "1.0.0",
+  "tools": [
+    {
+      "name": "status",
+      "description": "Read the local session status. Does not expose cookies.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js status"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "search_products",
+      "description": "Search Magnit catalogue; return verified product IDs for express cart.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "store_code": {
+            "type": "string",
+            "pattern": "^[0-9]{4,8}$"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "express",
+              "delivery",
+              "retail"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30
+          }
+        },
+        "required": [
+          "query",
+          "store_code",
+          "mode",
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js search_products UTCP_ARG_query_UTCP_END UTCP_ARG_store_code_UTCP_END UTCP_ARG_mode_UTCP_END UTCP_ARG_limit_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "list_categories",
+      "description": "Read catalog categories.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "store_code": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "express",
+              "delivery",
+              "retail"
+            ]
+          }
+        },
+        "required": [
+          "store_code",
+          "mode"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js list_categories UTCP_ARG_store_code_UTCP_END UTCP_ARG_mode_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "product_details",
+      "description": "Read product data; not a cart eligibility check.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string"
+          },
+          "store_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id",
+          "store_code"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js product_details UTCP_ARG_product_id_UTCP_END UTCP_ARG_store_code_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "shopping_context",
+      "description": "Read saved store and redacted delivery address.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js shopping_context"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "order_history",
+      "description": "Read prior orders; items are not cart product IDs.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "page",
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js order_history UTCP_ARG_page_UTCP_END UTCP_ARG_limit_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "view_cart",
+      "description": "Read and reconcile cart; totals are not checkout quotes.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "store_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "store_code"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js view_cart UTCP_ARG_store_code_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "add_to_cart",
+      "description": "Add verified nonweighted express product; re-search query in same call; request_id prevents replay.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "store_code": {
+            "type": "string"
+          },
+          "good_id": {
+            "type": "string"
+          },
+          "offer_id": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "required": [
+          "query",
+          "store_code",
+          "good_id",
+          "offer_id",
+          "quantity",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js add_to_cart UTCP_ARG_query_UTCP_END UTCP_ARG_store_code_UTCP_END UTCP_ARG_good_id_UTCP_END UTCP_ARG_offer_id_UTCP_END UTCP_ARG_quantity_UTCP_END UTCP_ARG_request_id_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "apply_cart",
+      "description": "Atomic 1–20 add/set/remove. Every add/set contains query for fresh verification. request_id required.",
+      "tags": [
+        "magnit",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "store_code": {
+            "type": "string"
+          },
+          "operations": {
+            "type": "string",
+            "description": "JSON-encoded array of operations, each with action, good_id, offer_id, optional quantity and query"
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "required": [
+          "store_code",
+          "operations",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js apply_cart UTCP_ARG_store_code_UTCP_END UTCP_ARG_operations_UTCP_END UTCP_ARG_request_id_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    }
+  ]
+}
