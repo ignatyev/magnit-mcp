@@ -205,7 +205,9 @@ function cartView(data, context) {
   }
   if (selectedFormats.length === 0) {
     return { ...common, cart_store_code: null, read_only: true, cart_context_status: "selected_format_missing",
-      warning: "В ответе нет корзины выбранного сервиса. Показываем только позиции, явно относящиеся к нему; изменение запрещено." };
+      warning: data.formats.length === 0 && data.items.length > 0
+        ? "API вернул позиции без указания формата корзины. Предыдущее добавление могло сработать; проверьте корзину в официальном Магните. Повторная запись запрещена до однозначного подтверждения."
+        : "В ответе нет корзины выбранного сервиса. Показываем только позиции, явно относящиеся к нему; изменение запрещено." };
   }
   if (multi || selectedFormats.length !== 1) {
     return { ...common, cart_store_code: selectedFormats.length === 1 ? selectedFormats[0].store_code : null,
