@@ -101,7 +101,11 @@ async function main() {
         "npm run status  — статус без Cookie",
         "npm run debug   — полный безопасный JSON отчёт (только чтение)",
         "npm run logout  — удалить локальную сохранённую сессию",
-        "npm run tool -- view_cart КОД express  — прочитать корзину через Chrome",
+        "npm run tool -- view_cart КОД express  — прочитать Магнит через Chrome",
+        "npm run tool -- browser_list_tabs  — вкладки твоего Chrome",
+        "npm run tool -- browser_open_tab https://vkusvill.ru/  — открыть магазин",
+        "npm run tool -- browser_inspect TAB_ID 35  — DOM и селекторы элементов",
+        "npm run tool -- browser_get_page_state TAB_ID  — проверить страницу",
         "python agent.py \"Собери корзину\"    — ИИ-агент (отдельный API ключ)",
       ].join("\n"));
       return;
