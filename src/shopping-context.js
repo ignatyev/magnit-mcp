@@ -55,7 +55,7 @@ export async function getMagnitShoppingContext({ session, fetchImpl = fetch }) {
   if (typeof session?.cookie !== "string" || !session.cookie) throw new MagnitApiError("session_missing", "Сначала войдите в Магнит на телефоне и сохраните сессию.");
   const headers = { Accept: "application/json", Cookie: session.cookie, Referer: "https://magnit.ru/", "x-magnit-bff": "1", "x-new-magnit": "true" };
   const addressData = await request(ADDRESS_URL, { method: "GET", headers }, fetchImpl);
-  const selected = session.context?.service === "express" && session.context?.storeCode ? validateStoreCode(session.context.storeCode) : null;
+  const selected = ["express", "dostavka"].includes(session.context?.service) && session.context?.storeCode ? validateStoreCode(session.context.storeCode) : null;
   let store = null;
   if (selected) {
     const storeData = await request(STORE_URL, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ externalId: { owner: "OWNER_MAGNIT", storeCode: selected } }) }, fetchImpl);
