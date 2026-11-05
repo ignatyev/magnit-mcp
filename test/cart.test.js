@@ -197,12 +197,12 @@ test("mixed carts display only delivery items and cannot clear pending reconcili
   assert.equal(saved,false);
 });
 
-test("unsynchronized delivery cart mutations are refused before any network access", async () => {
+test("legacy unjournaled delivery add remains disabled before network access", async () => {
   const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" } };
   let calls=0;
   await assert.rejects(addMagnitCartItem({session:sessionDelivery,storeCode:"992301",mode:"delivery",
     goodId:"milk",offerId:"milk",quantity:1,fetchImpl:async()=>{calls++;return response(cart([]))}}),
-  (error)=>error.code==="delivery_context_unverified");
+  (error)=>error.code==="unsupported_mode");
   assert.equal(calls,0);
 });
 
