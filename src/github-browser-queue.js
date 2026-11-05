@@ -92,18 +92,19 @@ async function finish(n) {
 async function handle(issue) {
   const n=issue.number;
   const comments=await github("GET","/repos/"+repo+"/issues/"+n+"/comments?per_page=100");
+  if(comments.length >= 100) return false; // Too many comments: never risk replay.
   if(comments.some(c=>c.body?.includes(CLAIM))){
     if(comments.some(c=>c.body?.includes(RESULT)))await finish(n);
-    return; // Never retry a claimed job, even after process crash.
+    return false; // Do not block later issues with an abandoned claimed job.
   }
   if(Date.now()-Date.parse(issue.created_at)>10*60_000){
     await comment(n,RESULT+"\nExpired without execution.");
-    await finish(n);return;
+    await finish(n);return true;
   }
   const task=parseTask(issue);
   if(!task){
     await comment(n,RESULT+"\nInvalid job JSON. Expected version/tool/args.");
-    await finish(n);return;
+    await finish(n);return true;
   }
   // Durable claim BEFORE any browser interaction prevents duplicate cart adds.
   await comment(n,CLAIM+"\nPhone accepted job; no automatic retries.");
@@ -119,6 +120,7 @@ async function handle(issue) {
   await comment(n,RESULT+"\nJSON result:\n"+payload);
   await finish(n);
   console.log("Job #"+n+" processed: "+(out.ok?"ok":out.error_code));
+  return true;
 }
 async function poll() {
   const issues=await github("GET","/repos/"+repo+
@@ -126,7 +128,7 @@ async function poll() {
   for(const issue of issues){
     if(stopped)break;
     if(issue.pull_request || !issue.title?.startsWith("[browser-job]"))continue;
-    await handle(issue);break;
+    if(await handle(issue)) break;
   }
 }
 async function main(){
