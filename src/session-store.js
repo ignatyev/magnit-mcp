@@ -109,6 +109,12 @@ export function publicSessionState(session) {
     selected_format_count: snap.selected_format_count,
     unattributed_item_count: snap.unattributed_item_count,
     captured_at: typeof snap.captured_at === "string" ? snap.captured_at.slice(0,32) : null,
+    request_header_names: Array.isArray(snap.request_header_names)
+      ? snap.request_header_names.filter(name=>typeof name==="string"
+        && /^[a-z][a-z0-9-]{0,39}$/.test(name)).slice(0,30) : null,
+    browser_cookie_count: Number.isSafeInteger(snap.browser_cookie_count)
+      && snap.browser_cookie_count>=0 && snap.browser_cookie_count<=100
+      ? snap.browser_cookie_count : null,
   } : null;
   return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true, browser_cart_snapshot: publicSnapshot } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false, browser_cart_snapshot: null };
 }
