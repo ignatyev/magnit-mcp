@@ -9,7 +9,7 @@ import { getMagnitOrderHistory, getMagnitShoppingContext } from "./shopping-cont
 import { loadOrCreateOwnerSecret } from "./local-owner.js";
 import { withMagnitChrome } from "./chrome-transport.js";
 
-// This runs on the user's own device; all Magnit calls are native HTTPS requests.
+// This runs on the user's own device; shopping calls use authenticated Android Chrome via local ADB/CDP.
 let promise;
 async function state() {
   if (!promise) promise=(async()=>{
@@ -59,7 +59,7 @@ export function sessionForSelectedStore(session, storeCode, mode) {
 export async function runTool(name,args={}) {
   if(!args||typeof args!=="object"||Array.isArray(args))throw new MagnitApiError("invalid_arguments","Expected JSON object.");
   const {sessions,journal}=await state();
-  if(name==="status")return {transport:"utcp-chrome-cdp",session:publicSessionState(await sessions.load()),login_url:"http://127.0.0.1:"+(process.env.PORT||8080),live_compatibility:"unverified",checkout_supported:false};
+  if(name==="status")return {transport:"utcp-chrome-cdp",session:publicSessionState(await sessions.load()),login_method:"termux_cli_sync",live_compatibility:"unverified",checkout_supported:false};
   if(name==="search_products")return locked(async()=>{
     const {code,mode}=store(args);
     const session=sessionForSelectedStore(await sessions.load(),code,mode);
