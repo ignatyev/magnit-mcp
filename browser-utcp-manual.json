@@ -1,0 +1,360 @@
+{
+  "utcp_version": "1.0.0",
+  "manual_version": "1.0.0",
+  "tools": [
+    {
+      "name": "browser_list_tabs",
+      "description": "List HTTPS tabs from the user's own Android Chrome",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_list_tabs"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_open_tab",
+      "description": "Open a public HTTPS shopping site in existing Chrome",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_open_tab UTCP_ARG_url_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_navigate",
+      "description": "Navigate selected Chrome tab to an HTTPS site",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tab_id",
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_navigate UTCP_ARG_tab_id_UTCP_END UTCP_ARG_url_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_inspect",
+      "description": "Inspect visible DOM elements and CSS selectors",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tab_id",
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_inspect UTCP_ARG_tab_id_UTCP_END UTCP_ARG_limit_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_get_page_state",
+      "description": "Read the page and verify cart state",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tab_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_get_page_state UTCP_ARG_tab_id_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_click",
+      "description": "Click an element; checkout and payment are blocked. Never retry blindly",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tab_id",
+          "selector"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_click UTCP_ARG_tab_id_UTCP_END UTCP_ARG_selector_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_type",
+      "description": "Type into a non-sensitive field; no passwords or OTP",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "replace": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "tab_id",
+          "selector",
+          "text",
+          "replace"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_type UTCP_ARG_tab_id_UTCP_END UTCP_ARG_selector_UTCP_END UTCP_ARG_text_UTCP_END UTCP_ARG_replace_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_scroll",
+      "description": "Scroll an existing Chrome tab",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tab_id",
+          "x",
+          "y"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_scroll UTCP_ARG_tab_id_UTCP_END UTCP_ARG_x_UTCP_END UTCP_ARG_y_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_wait_for",
+      "description": "Wait for visible element",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tab_id",
+          "selector",
+          "timeout_ms"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_wait_for UTCP_ARG_tab_id_UTCP_END UTCP_ARG_selector_UTCP_END UTCP_ARG_timeout_ms_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    },
+    {
+      "name": "browser_screenshot",
+      "description": "Save a local PNG of current tab",
+      "tags": [
+        "browser",
+        "shopping"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tab_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object"
+      },
+      "tool_call_template": {
+        "call_template_type": "cli",
+        "commands": [
+          {
+            "command": "node --env-file-if-exists=.env src/tool-cli.js browser_screenshot UTCP_ARG_tab_id_UTCP_END"
+          }
+        ],
+        "working_dir": "."
+      }
+    }
+  ]
+}
