@@ -90,12 +90,16 @@ async function safeCartErrorCode(response) {
   } catch { return null; }
 }
 
-async function cartRequest(session, method, body, fetchImpl, timeoutMs) {
+async function cartRequest(session, method, body, fetchImpl, timeoutMs, { browserParity = false } = {}) {
   let response;
   try {
+    const outgoingHeaders = cartHeaders(session);
+    // The captured official Chrome cart GET does not send x-new-magnit,
+    // while our legacy adapter did. Compare this safely using GET only.
+    if (browserParity && method === "GET") delete outgoingHeaders["x-new-magnit"];
     response = await fetchImpl(CART_URL, {
       method,
-      headers: { ...cartHeaders(session), ...(method === "PUT" ? { Origin: "https://magnit.ru" } : {}) },
+      headers: { ...outgoingHeaders, ...(method === "PUT" ? { Origin: "https://magnit.ru" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
@@ -227,6 +231,45 @@ function cartView(data, context) {
   return { ...common, cart_store_code: cartStoreCode, read_only: readOnly,
     cart_context_status: "single_format",
     warning: readOnly ? "Для изменения выбранной корзины синхронизируйте её в официальном Chrome." : null };
+}
+
+/**
+ * Read-only side-by-side comparison of the currently used adapter headers
+ * and captured official Chrome headers. Never performs a PUT, changes a cart,
+ * resolves the mutation ledger, or reveals cookies, IDs or raw responses.
+ */
+export async function diagnoseMagnitCartHeaders({ session, storeCode, mode, fetchImpl = fetch, timeoutMs = 15_000 }) {
+  const active = requireSession(session, storeCode, mode);
+  async function sample(browserParity) {
+    try {
+      const payload = await cartRequest(active, "GET", null, fetchImpl, timeoutMs, { browserParity });
+      const view = cartView(payload, active.context);
+      return {
+        ok: true,
+        raw_item_count: view.raw_item_count,
+        raw_format_count: view.raw_format_count,
+        attributable_item_count: view.items.length,
+        unknown_service_count: view.unattributed_items_count,
+        formats: view.formats,
+        cart_context_status: view.cart_context_status,
+        read_only: view.read_only,
+      };
+    } catch (cause) {
+      return {
+        ok: false,
+        error_code: cause instanceof MagnitApiError ? cause.code : "diagnostic_failed",
+      };
+    }
+  }
+  return {
+    service: active.context.service,
+    request_store_code: active.context.storeCode,
+    browser_context_verified: active.context.observedInBrowser === true,
+    legacy: await sample(false),
+    chrome_headers: await sample(true),
+    changes_written: false,
+    note: "Два последовательных запроса GET, ни одного PUT. Ответы могут измениться между чтениями.",
+  };
 }
 
 export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore = null }) {
