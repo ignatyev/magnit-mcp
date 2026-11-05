@@ -15,6 +15,6 @@
     "help": "node --env-file-if-exists=.env src/phone-cli.js help",
     "tool": "node --env-file-if-exists=.env src/tool-cli.js",
     "test": "node --test",
-    "check": "node --check src/toolkit.js && node --check src/tool-cli.js && node --check src/phone-cli.js && node --check src/chrome-transport.js"
+    "check": "node --check src/toolkit.js && node --check src/tool-cli.js && node --check src/phone-cli.js && node --check src/chrome-transport.js && node --check src/browser-agent.js"
   }
 }
