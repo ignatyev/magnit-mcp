@@ -2,7 +2,7 @@ import { mkdir, open, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { getMagnitCategories, getMagnitProductDetails, searchMagnit, validateStoreCode, MagnitApiError } from "./magnit-api.js";
 import { applyMagnitCart, viewMagnitCart } from "./cart.js";
-import { createEncryptedSessionStore, publicSessionState, bindExpressSearchContext } from "./session-store.js";
+import { createEncryptedSessionStore, publicSessionState, bindSearchContext } from "./session-store.js";
 import { createCartOperationStore } from "./cart-operation-store.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
 import { getMagnitOrderHistory, getMagnitShoppingContext } from "./shopping-context.js";
@@ -30,9 +30,11 @@ function integer(x, fallback, upper) {
   if(!Number.isSafeInteger(n)||n<1||n>upper) throw new MagnitApiError("invalid_arguments","Invalid integer");
   return n;
 }
-function store(args) {
-  if(args.mode!==undefined&&args.mode!=="express") throw new MagnitApiError("unsupported_mode","Cart works only in express mode");
-  return validateStoreCode(args.store_code);
+function store(args, write = false) {
+  const mode = args.mode || "express";
+  if(!["express","delivery"].includes(mode) || (write && mode !== "express"))
+    throw new MagnitApiError("unsupported_mode", write ? "Delivery cart write is disabled" : "Only delivery or express cart is supported");
+  return { code: validateStoreCode(args.store_code), mode };
 }
 // Cross-process protection. A crash leaves a lock that must be inspected manually.
 async function locked(fn) {
@@ -44,10 +46,11 @@ async function locked(fn) {
   try{return await fn();}finally{await fd.close();await unlink(p);}
 }
 export async function getLocalSessionStore(){return (await state()).sessions;}
-async function selectStore(sessions,storeCode) {
+async function selectStore(sessions,storeCode,mode) {
   const s=await sessions.load();
-  if(s?.cookie&&(s.context?.storeCode!==storeCode||s.context?.service!=="express"))
-    await sessions.save(bindExpressSearchContext(s,storeCode));
+  const service=mode==="delivery"?"dostavka":"express";
+  if(s?.cookie&&(s.context?.storeCode!==storeCode||s.context?.service!==service))
+    await sessions.save(bindSearchContext(s,storeCode,mode));
 }
 export async function runTool(name,args={}) {
   if(!args||typeof args!=="object"||Array.isArray(args))throw new MagnitApiError("invalid_arguments","Expected JSON object.");
@@ -55,16 +58,20 @@ export async function runTool(name,args={}) {
   if(name==="status")return {transport:"utcp-cli",session:publicSessionState(await sessions.load()),login_url:"http://127.0.0.1:"+(process.env.PORT||8080),live_compatibility:"unverified",checkout_supported:false};
   if(name==="search_products"){
     const r=await searchMagnit({query:args.query,storeCode:validateStoreCode(args.store_code),mode:args.mode||"express",limit:integer(args.limit,20,30)});
-    if(r.mode==="express")await selectStore(sessions,r.store_code);
+    if(["express","delivery"].includes(r.mode))await selectStore(sessions,r.store_code,r.mode);
     return r;
   }
   if(name==="list_categories")return getMagnitCategories({storeCode:validateStoreCode(args.store_code),mode:args.mode||"express"});
   if(name==="product_details")return getMagnitProductDetails({productId:safeId(args.product_id,"product_id"),storeCode:validateStoreCode(args.store_code),mode:"express"});
   if(name==="shopping_context")return getMagnitShoppingContext({session:await sessions.load()});
   if(name==="order_history")return getMagnitOrderHistory({session:await sessions.load(),page:integer(args.page,1,100),limit:integer(args.limit,10,30)});
-  if(name==="view_cart")return locked(async()=>viewMagnitCart({session:await sessions.load(),storeCode:store(args),mode:"express",operationStore:journal,saveSession:s=>sessions.save(s)}));
+  if(name==="view_cart")return locked(async()=>{
+    const {code,mode}=store(args);
+    await selectStore(sessions,code,mode);
+    return viewMagnitCart({session:await sessions.load(),storeCode:code,mode,operationStore:journal,saveSession:s=>sessions.save(s)});
+  });
   if(name==="add_to_cart"||name==="apply_cart")return locked(async()=>{
-    const code=store(args);
+    const {code}=store(args,true);
     const registry=createCartEligibilityRegistry();
     const operations=name==="add_to_cart"?[{action:"add",good_id:args.good_id,offer_id:args.offer_id,quantity:args.quantity,query:args.query}]:args.operations;
     if(!Array.isArray(operations)||operations.length<1||operations.length>20)throw new MagnitApiError("invalid_arguments","1–20 operations required.");
@@ -80,7 +87,7 @@ export async function runTool(name,args={}) {
         checked.push({action:op.action,good_id,offer_id,quantity:integer(op.quantity,1,99)});
       } else checked.push({action:"remove",good_id,offer_id});
     }
-    await selectStore(sessions,code);
+    await selectStore(sessions,code,"express");
     const session=await sessions.load();
     if(!session?.cookie)throw new MagnitApiError("session_missing","Sign in via local phone UI first.");
     return applyMagnitCart({session,storeCode:code,mode:"express",requestId:safeId(args.request_id,"request_id"),operations:checked,operationStore:journal,saveSession:s=>sessions.save(s),requireEligible:(s,g,o)=>registry.require(s,g,o)});
