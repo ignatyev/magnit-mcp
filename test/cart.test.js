@@ -338,3 +338,35 @@ test("delivery HAR: preserve grams and omit zero-quantity ghost lines on PUT", a
   assert.equal(result.cart_context_status,"single_format");
   assert.equal(result.read_only,false);
 });
+
+test("empty delivery GET is read-only and cannot overwrite an existing basket", async () => {
+  const delivery = { cookie: session.cookie, context: {
+    ...session.context, service: "dostavka", storeCode: "992332", observedInBrowser: true,
+  } };
+  const empty = { items: [], formats: [], totalGoodsCount: 0 };
+  let reconciled = false;
+  const view = await viewMagnitCart({
+    session: delivery, storeCode: "992332", mode: "delivery",
+    fetchImpl: async () => response(empty),
+    operationStore: { fingerprint: () => "fingerprint", reconcile: async () => { reconciled = true; } },
+  });
+  assert.equal(view.cart_context_status, "empty");
+  assert.equal(view.read_only, true);
+  assert.equal(view.items.length, 0);
+  assert.equal(view.formats.length, 0);
+  assert.equal(reconciled, false);
+  let calls = 0, began = false;
+  await assert.rejects(applyMagnitCart({
+    session: delivery, storeCode: "992332", mode: "delivery",
+    requestId: "empty-delivery-cart-attempt",
+    operations: [{ action: "add", good_id: "milk", offer_id: "milk", quantity: 1 }],
+    requireEligible: async () => {},
+    operationStore: {
+      fingerprint: () => "fingerprint", inspect: async () => ({ replay: false }),
+      assertWritable: async () => {}, begin: async () => { began = true; },
+    },
+    fetchImpl: async () => { calls++; return response(empty); },
+  }), error => error.code === "cart_format_ambiguous");
+  assert.equal(calls, 1, "one GET, no PUT");
+  assert.equal(began, false);
+});
