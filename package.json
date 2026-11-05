@@ -7,9 +7,14 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env src/ui.js",
+    "start": "node --env-file-if-exists=.env src/phone-cli.js sync",
+    "sync": "node --env-file-if-exists=.env src/phone-cli.js sync",
+    "status": "node --env-file-if-exists=.env src/phone-cli.js status",
+    "debug": "node --env-file-if-exists=.env src/phone-cli.js debug",
+    "logout": "node --env-file-if-exists=.env src/phone-cli.js logout",
+    "help": "node --env-file-if-exists=.env src/phone-cli.js help",
     "tool": "node --env-file-if-exists=.env src/tool-cli.js",
     "test": "node --test",
-    "check": "node --check src/toolkit.js && node --check src/tool-cli.js && node --check src/ui.js"
+    "check": "node --check src/toolkit.js && node --check src/tool-cli.js && node --check src/phone-cli.js && node --check src/chrome-transport.js"
   }
 }
