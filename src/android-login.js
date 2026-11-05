@@ -12,6 +12,26 @@ const HEADER_ALLOWLIST = new Set([
   "x-device-id", "x-device-tag", "x-app-version", "x-platform-version",
   "x-client-name", "x-device-platform", "x-new-magnit", "user-agent",
 ]);
+// Only fixed, non-sensitive header NAMES enter diagnostic snapshots, never values.
+const DIAGNOSTIC_HEADER_NAMES = new Set([
+  "accept", "accept-encoding", "accept-language", "content-type", "cookie",
+  "referer", "origin", "user-agent", "x-client-name", "x-device-platform",
+  "x-service", "x-store-code", "x-magnit-bff", "x-permissions-jwt",
+  "x-device-id", "x-device-tag", "x-app-version", "x-platform-version",
+  "x-new-magnit", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest",
+  "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+]);
+function knownHeaderNames(headers) {
+  return Object.keys(headers || {}).map(k=>k.toLowerCase())
+    .filter(k=>DIAGNOSTIC_HEADER_NAMES.has(k)).sort();
+}
+function safeBrowserCookieCount(headers) {
+  const pair=Object.entries(headers || {}).find(([name])=>name.toLowerCase()==="cookie");
+  const raw=pair?.[1];
+  if(typeof raw!=="string" || raw.length>8192) return null;
+  const n=raw.split(";").filter(p=>p.trim()).length;
+  return n>0 && n<=100 ? n : null;
+}
 const SAFE_LOGIN_FAILURES = new Set(["setup_required", "adb_missing", "adb_command_failed", "adb_forward_failed", "chrome_debug_endpoint_unavailable", "chrome_target_create_failed", "chrome_target_invalid", "chrome_target_attach_failed", "chrome_tab_activate_failed", "cdp_connect_failed", "cdp_network_enable_failed", "chrome_tab_navigate_failed", "login_unavailable"]);
 
 function safeContext(headers) {
@@ -215,7 +235,7 @@ class CdpClient extends EventEmitter {
 }
 
 // Store only redacted response counts from the official Android Chrome GET.
-export function safeObservedCartSnapshot(rawBody, observedContext) {
+export function safeObservedCartSnapshot(rawBody, observedContext, metadata = {}) {
   let body;
   try { body = JSON.parse(rawBody); } catch { return null; }
   if (!body || !Array.isArray(body.items) || !Array.isArray(body.formats) ||
@@ -230,6 +250,12 @@ export function safeObservedCartSnapshot(rawBody, observedContext) {
     raw_format_count: body.formats.length,
     selected_format_count: body.formats.filter(f=>f?.service === observedContext.service).length,
     unattributed_item_count: body.items.filter(item=>typeof item?.goodService !== "string").length,
+    request_header_names: Array.isArray(metadata.headerNames)
+      ? [...new Set(metadata.headerNames)].filter(n=>DIAGNOSTIC_HEADER_NAMES.has(n)).sort()
+      : null,
+    browser_cookie_count: Number.isSafeInteger(metadata.browserCookieCount)
+      && metadata.browserCookieCount>=0 && metadata.browserCookieCount<=100
+      ? metadata.browserCookieCount : null,
     captured_at: new Date().toISOString(),
   };
 }
@@ -347,7 +373,10 @@ export class AndroidMagnitLogin {
     // Never trust a cart request until the official tab receives HTTP 200.
     if (typeof requestId === "string" && typeof request?.url === "string" && request.url === CART_URL) {
       if (this.cartRequests.size >= 32) this.cartRequests.delete(this.cartRequests.keys().next().value);
-      this.cartRequests.set(requestId, { headers: allowedCartHeaders(request.headers), confirmed: false });
+      this.cartRequests.set(requestId, { headers: allowedCartHeaders(request.headers),
+          headerNames: knownHeaderNames(request.headers),
+          browserCookieCount: safeBrowserCookieCount(request.headers),
+          confirmed: false });
     }
     if (typeof params?.requestId === "string" && typeof request?.url === "string") {
       try {
@@ -364,6 +393,9 @@ export class AndroidMagnitLogin {
     const pending = this.cartRequests.get(params?.requestId);
     if (pending) {
       Object.assign(pending.headers, allowedCartHeaders(params.headers));
+      pending.headerNames = [...new Set([...pending.headerNames, ...knownHeaderNames(params.headers)])].sort();
+      const count = safeBrowserCookieCount(params.headers);
+      if (count !== null) pending.browserCookieCount = count;
       if (pending.confirmed) this.context = safeContext(pending.headers) || this.context;
     }
   }
@@ -398,7 +430,10 @@ export class AndroidMagnitLogin {
           if (!this.closed && typeof result?.body === "string" && result.body.length <= 350_000) {
             const bytes = result.base64Encoded ? Buffer.from(result.body, "base64") : Buffer.from(result.body, "utf8");
             if (bytes.length <= 256_000)
-              this.cartSnapshot = safeObservedCartSnapshot(bytes.toString("utf8"), observed);
+              this.cartSnapshot = safeObservedCartSnapshot(bytes.toString("utf8"), observed, {
+                headerNames: pendingCart.headerNames,
+                browserCookieCount: pendingCart.browserCookieCount,
+              });
           }
         } catch { /* Diagnostic response is optional. No raw data is retained. */ }
         finally { this.cartCaptureComplete = true; }

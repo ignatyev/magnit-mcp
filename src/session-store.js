@@ -103,12 +103,26 @@ export function publicSessionState(session) {
     snap.request_store_code === session.context.storeCode &&
     [snap.raw_item_count, snap.raw_format_count, snap.selected_format_count,
       snap.unattributed_item_count].every(n=>Number.isSafeInteger(n)&&n>=0&&n<=250);
-  const publicSnapshot = matches ? {
+  const SAFE_CHROME_HEADER_NAMES = new Set([
+  "accept","accept-encoding","accept-language","content-type","cookie",
+  "referer","origin","user-agent","x-client-name","x-device-platform",
+  "x-service","x-store-code","x-magnit-bff","x-permissions-jwt",
+  "x-device-id","x-device-tag","x-app-version","x-platform-version",
+  "x-new-magnit","sec-fetch-site","sec-fetch-mode","sec-fetch-dest",
+  "sec-ch-ua","sec-ch-ua-mobile","sec-ch-ua-platform",
+]);
+const publicSnapshot = matches ? {
     raw_item_count: snap.raw_item_count,
     raw_format_count: snap.raw_format_count,
     selected_format_count: snap.selected_format_count,
     unattributed_item_count: snap.unattributed_item_count,
     captured_at: typeof snap.captured_at === "string" ? snap.captured_at.slice(0,32) : null,
+    request_header_names: Array.isArray(snap.request_header_names)
+      ? snap.request_header_names.filter(name=>typeof name==="string"
+        && SAFE_CHROME_HEADER_NAMES.has(name)).slice(0,30) : null,
+    browser_cookie_count: Number.isSafeInteger(snap.browser_cookie_count)
+      && snap.browser_cookie_count>=0 && snap.browser_cookie_count<=100
+      ? snap.browser_cookie_count : null,
   } : null;
   return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true, browser_cart_snapshot: publicSnapshot } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false, browser_cart_snapshot: null };
 }

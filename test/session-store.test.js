@@ -146,3 +146,18 @@ test("public Chrome cart snapshot requires exactly matching verified service/sto
   assert.equal(publicSessionState({...session,context:{...session.context,storeCode:"230668"},browserCartSnapshot:snap}).browser_cart_snapshot,null);
   assert.equal(publicSessionState({...session,context:{...session.context,observedInBrowser:false},browserCartSnapshot:snap}).browser_cart_snapshot,null);
 });
+
+test("public snapshot exposes only redacted header names and counts",()=>{
+  const saved={cookie:"sid=private",context:{service:"express",storeCode:"233472",bff:"1",observedInBrowser:true},
+    browserCartSnapshot:{
+      source:"official_android_chrome",service:"express",request_store_code:"233472",
+      raw_item_count:5,raw_format_count:1,selected_format_count:1,unattributed_item_count:3,
+      request_header_names:["x-service","user-agent","Cookie=SECRET","authorization"],
+      browser_cookie_count:2,captured_at:"2026-11-05T14:50:06Z"
+    }};
+  const out=publicSessionState(saved);
+  assert.deepEqual(out.browser_cart_snapshot.request_header_names,["x-service","user-agent"]);
+  assert.equal(out.browser_cart_snapshot.browser_cookie_count,2);
+  assert.equal(JSON.stringify(out).includes("SECRET"),false);
+  assert.equal(JSON.stringify(out).includes("sid=private"),false);
+});

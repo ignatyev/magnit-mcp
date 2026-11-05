@@ -29,4 +29,31 @@ test("Express is the default mobile mode and embedded UI JavaScript parses", () 
   assert.ok(js, "client script must be present");
   assert.doesNotThrow(() => new Script(js[1]));
   assert.match(js[1], /mode:selectedMode/);
+  assert.match(html, /id="collect"/);
+  assert.match(html, /id="copyReport"/);
+  assert.match(html, /id="downloadReport"/);
+  assert.match(js[1], /collect_debug_report|api\/debug\/report/);
+  assert.doesNotMatch(js[1], /el\("compare"\)\.onclick/);
+
+});
+
+
+test("one-click diagnostic journal summary is read-only and contains no request identifiers",async()=>{
+  const {createCartOperationStore}=await import("../src/cart-operation-store.js");
+  const {mkdtemp,rm}=await import("node:fs/promises");
+  const {join}=await import("node:path");
+  const {tmpdir}=await import("node:os");
+  const folder=await mkdtemp(join(tmpdir(),"utcp-debug-test-"));
+  try {
+    const journal=createCartOperationStore({secret:"a synthetic test encryption secret 1234567890",
+      filename:join(folder,"cart-operations.enc")});
+    await journal.begin({requestId:"private-request-id",sessionFingerprint:"fingerprint",payloadHash:"hash",storeCode:"233472"});
+    const out=await journal.summary({sessionFingerprint:"fingerprint",storeCode:"233472"});
+    assert.deepEqual(out,{pending:1,ambiguous:0,complete:0,reconciled:0,write_blocked:true});
+    assert.equal(JSON.stringify(out).includes("private-request-id"),false);
+    const other=await journal.summary({sessionFingerprint:"fingerprint",storeCode:"230668"});
+    assert.equal(other.pending,0);
+    await journal.finish({requestId:"private-request-id",sessionFingerprint:"fingerprint",status:"ambiguous"});
+    assert.equal((await journal.summary({sessionFingerprint:"fingerprint",storeCode:"233472"})).ambiguous,1);
+  } finally {await rm(folder,{recursive:true,force:true})}
 });
