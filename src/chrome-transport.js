@@ -122,9 +122,9 @@ export async function withMagnitChrome({
     for (let i = 0; i < 30; i++) {
       try {
         const value = await cdp.send("Runtime.evaluate", {
-          expression: "location.origin", returnByValue: true,
+          expression: "location.origin + \"|\" + document.readyState", returnByValue: true,
         }, 2500, sessionId);
-        if (!value.exceptionDetails && value?.result?.value === ORIGIN) { ready = true; break; }
+        if (!value.exceptionDetails && ["interactive", "complete"].some(phase => value?.result?.value === ORIGIN + "|" + phase)) { ready = true; break; }
       } catch { /* Page can still be navigating. */ }
       await delay(300);
     }
