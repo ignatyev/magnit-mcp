@@ -134,3 +134,15 @@ test("temporary cart selection does not clobber the verified browser context on 
     assert.equal(sessionForSelectedStore(await store.load(), "992301", "delivery").context.observedInBrowser, true);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("public Chrome cart snapshot requires exactly matching verified service/store", () => {
+  const session={cookie:"sid=secret",context:{service:"express",storeCode:"233472",bff:"1",observedInBrowser:true}};
+  const snap={source:"official_android_chrome",service:"express",request_store_code:"233472",
+    raw_item_count:4,raw_format_count:1,selected_format_count:1,unattributed_item_count:2,
+    captured_at:"2026-11-05T14:26:00.000Z",cart_id:"must-not-leak"};
+  const exposed=publicSessionState({...session,browserCartSnapshot:snap});
+  assert.equal(exposed.browser_cart_snapshot.raw_item_count,4);
+  assert.equal(JSON.stringify(exposed).includes("must-not-leak"),false);
+  assert.equal(publicSessionState({...session,context:{...session.context,storeCode:"230668"},browserCartSnapshot:snap}).browser_cart_snapshot,null);
+  assert.equal(publicSessionState({...session,context:{...session.context,observedInBrowser:false},browserCartSnapshot:snap}).browser_cart_snapshot,null);
+});
