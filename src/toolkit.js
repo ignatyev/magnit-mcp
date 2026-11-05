@@ -1,7 +1,7 @@
 import { mkdir, open, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { getMagnitCategories, getMagnitProductDetails, searchMagnit, validateStoreCode, MagnitApiError } from "./magnit-api.js";
-import { applyMagnitCart, viewMagnitCart } from "./cart.js";
+import { applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders } from "./cart.js";
 import { createEncryptedSessionStore, publicSessionState, bindSearchContext } from "./session-store.js";
 import { createCartOperationStore } from "./cart-operation-store.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
@@ -67,6 +67,11 @@ export async function runTool(name,args={}) {
   if(name==="product_details")return getMagnitProductDetails({productId:safeId(args.product_id,"product_id"),storeCode:validateStoreCode(args.store_code),mode:"express"});
   if(name==="shopping_context")return getMagnitShoppingContext({session:await sessions.load()});
   if(name==="order_history")return getMagnitOrderHistory({session:await sessions.load(),page:integer(args.page,1,100),limit:integer(args.limit,10,30)});
+  if(name==="compare_cart_headers")return locked(async()=>{
+    const {code,mode}=store(args);
+    const selected=sessionForSelectedStore(await sessions.load(),code,mode);
+    return diagnoseMagnitCartHeaders({session:selected,storeCode:code,mode});
+  });
   if(name==="view_cart")return locked(async()=>{
     const {code,mode}=store(args);
     const saved = await sessions.load();
