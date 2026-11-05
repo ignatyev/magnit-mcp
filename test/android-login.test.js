@@ -50,56 +50,65 @@ test("session authorization check is pinned and distinguishes unauthorized/403",
   await assert.rejects(isMagnitAuthenticated(session, async () => new Response("blocked", { status: 403 })), (error) => error.code === "access_denied");
 });
 
+const cdpCalls=[];
 class FakeWebSocket {
   constructor(url) {
-    this.url = url;
-    this.listeners = new Map();
-    queueMicrotask(() => this.emit("open", {}));
+    this.url=url; this.listeners=new Map();
+    queueMicrotask(()=>this.emit("open",{}));
   }
-  addEventListener(name, listener) { const list = this.listeners.get(name) || []; list.push(listener); this.listeners.set(name, list); }
-  emit(name, event) { for (const listener of this.listeners.get(name) || []) listener(event); }
+  addEventListener(name,handler){const list=this.listeners.get(name)||[];list.push(handler);this.listeners.set(name,list);}
+  emit(name,event){for(const cb of this.listeners.get(name)||[])cb(event);}
   send(raw) {
-    const { id, method } = JSON.parse(raw);
-    const result = method === "Network.getCookies" ? { cookies: [{ name: "sid", value: "synthetic-cookie", domain: ".magnit.ru", path: "/", secure: true, expires: -1 }] } : {};
-    queueMicrotask(() => {
-      this.emit("message", { data: JSON.stringify({ id, result }) });
-      if (method === "Network.enable") this.emit("message", { data: JSON.stringify({ method: "Network.requestWillBeSent", params: { requestId: "cart-1", request: { method: "GET", url: CART_URL, headers: { "x-service": "express", "x-store-code": "123456", "x-magnit-bff": "synthetic-context" } } } }) });
+    const {id,method}=JSON.parse(raw);
+    cdpCalls.push(method);
+    const result=method==="Target.createTarget"?{targetId:"page-id"}
+      :method==="Target.attachToTarget"?{sessionId:"session-id"}
+      :method==="Network.getResponseBody"?{body:'{"authorized":true}',base64Encoded:false}
+      :method==="Network.getCookies"?{cookies:[{name:"sid",value:"synthetic-cookie",domain:".magnit.ru",path:"/",secure:true,expires:-1}]}
+      :{};
+    queueMicrotask(()=>{
+      this.emit("message",{data:JSON.stringify({id,result})});
+      if(method==="Page.navigate"){
+        // CDP observes only network events from its own freshly created tab.
+        const event=(method,params)=>this.emit("message",{data:JSON.stringify({method,params,sessionId:"session-id"})});
+        queueMicrotask(()=>{
+          event("Network.requestWillBeSent",{requestId:"cart-1",request:{method:"GET",url:CART_URL,headers:{"x-service":"express","x-store-code":"123456","x-magnit-bff":"synthetic-context"}}});
+          event("Network.requestWillBeSent",{requestId:"auth-1",request:{method:"GET",url:"https://magnit.ru/_auth/session"}});
+          event("Network.responseReceived",{requestId:"auth-1",response:{status:200,url:"https://magnit.ru/_auth/session"}});
+          event("Network.loadingFinished",{requestId:"auth-1"});
+        });
+      }
     });
   }
-  close() { this.emit("close", {}); }
+  close(){this.emit("close",{});}
 }
 
-test("Android login creates and closes only its own official tab and saves only after auth+cart verification", async () => {
-  const adbCalls = [];
-  const httpCalls = [];
+test("Android login observes official auth on its own CDP tab, saves cookie, and closes only its tab",async()=>{
+  cdpCalls.length=0;
+  const adbCalls=[],httpCalls=[];
   let saved;
-  const exec = async (args) => {
+  const exec=async(args)=>{
     adbCalls.push(args);
-    if (args[0] === "devices") return "List of devices attached\nsynthetic-device device product:phone\n";
-    if (args.includes("forward") && args.includes("tcp:0")) return "43210";
+    if(args[0]==="devices")return "List of devices attached\nsynthetic-device device product:phone\n";
+    if(args.includes("forward")&&args.includes("tcp:0"))return "43210";
     return "";
   };
-  const fetchImpl = async (url, init = {}) => {
-    httpCalls.push({ url, method: init.method || "GET" });
-    if (url === "http://127.0.0.1:43210/json/version") return Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:43210/devtools/browser/browser-id" });
-    if (url.startsWith("http://127.0.0.1:43210/json/new?")) return Response.json({ id: "page-id", url: "https://magnit.ru/", webSocketDebuggerUrl: "ws://127.0.0.1:43210/devtools/page/page-id" });
-    if (url.includes("/json/activate/") || url.includes("/json/close/")) return new Response(null, { status: 200 });
-    if (url === "https://magnit.ru/_auth/session") return Response.json({ authorized: true });
-    if (url === CART_URL) return Response.json({ items: [], formats: [], totalBasePrice: 0, totalFinalPrice: 0, totalGoodsCount: 0 });
-    throw new Error("Unexpected URL in synthetic test.");
+  const fetchImpl=async(url,init={})=>{
+    httpCalls.push({url,method:init.method||"GET"});
+    if(url==="http://127.0.0.1:43210/json/version")return Response.json({webSocketDebuggerUrl:"ws://127.0.0.1:43210/devtools/browser/browser-id"});
+    throw Error("Unexpected direct request");
   };
-  const login = new AndroidMagnitLogin({ saveSession: async (session) => { saved = session; }, exec, fetchImpl, WebSocketImpl: FakeWebSocket, intervalMs: 5, timeoutMs: 1000 });
+  const login=new AndroidMagnitLogin({saveSession:async s=>{saved=s;},exec,fetchImpl,WebSocketImpl:FakeWebSocket,intervalMs:5,timeoutMs:1000});
   await login.start();
-  for (let i = 0; i < 100 && login.snapshot().status !== "ready"; i++) await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(login.snapshot().status, "ready");
-  assert.equal(saved.cookie, "sid=synthetic-cookie");
-  assert.deepEqual(saved.context, { service: "express", storeCode: "123456", bff: "synthetic-context", permissionsJwt: null });
-  assert.equal(httpCalls.filter((call) => call.url === CART_URL).length, 1);
-  assert.equal(httpCalls.some((call) => call.url.includes("/json/close/page-id")), true);
-  assert.equal(httpCalls.find((call) => call.url.includes("/json/activate/"))?.method, "GET");
-  assert.equal(httpCalls.find((call) => call.url.includes("/json/close/"))?.method, "GET");
-  assert.equal(adbCalls.some((args) => args.includes("--remove") && args.includes("tcp:43210")), true);
-  assert.equal(JSON.stringify(login.snapshot()).includes("synthetic-cookie"), false);
+  for(let i=0;i<100&&login.snapshot().status!=="ready";i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(login.snapshot().status,"ready");
+  assert.equal(saved.cookie,"sid=synthetic-cookie");
+  assert.deepEqual(saved.context,{service:"express",storeCode:"123456",bff:"synthetic-context",permissionsJwt:null});
+  assert.equal(httpCalls.filter(x=>x.url===CART_URL).length,0);
+  assert(cdpCalls.includes("Target.createTarget"));
+  assert(cdpCalls.includes("Target.closeTarget"));
+  assert(adbCalls.some(args=>args.includes("--remove")&&args.includes("tcp:43210")));
+  assert.equal(JSON.stringify(login.snapshot()).includes("synthetic-cookie"),false);
 });
 
 test("cancellation while adb forward is pending still removes the newly-created forward", async () => {
