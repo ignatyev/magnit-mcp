@@ -32,8 +32,8 @@ function integer(x, fallback, upper) {
 }
 function store(args, write = false) {
   const mode = args.mode || "express";
-  if(!["express","delivery"].includes(mode) || (write && mode !== "express"))
-    throw new MagnitApiError("unsupported_mode", write ? "Delivery cart write is disabled" : "Only delivery or express cart is supported");
+  if(!["express","delivery"].includes(mode))
+    throw new MagnitApiError("unsupported_mode", "Only delivery or express cart is supported");
   return { code: validateStoreCode(args.store_code), mode };
 }
 // Cross-process protection. A crash leaves a lock that must be inspected manually.
@@ -71,7 +71,7 @@ export async function runTool(name,args={}) {
     return viewMagnitCart({session:await sessions.load(),storeCode:code,mode,operationStore:journal,saveSession:s=>sessions.save(s)});
   });
   if(name==="add_to_cart"||name==="apply_cart")return locked(async()=>{
-    const {code}=store(args,true);
+    const {code,mode}=store(args,true);
     const registry=createCartEligibilityRegistry();
     const operations=name==="add_to_cart"?[{action:"add",good_id:args.good_id,offer_id:args.offer_id,quantity:args.quantity,query:args.query}]:args.operations;
     if(!Array.isArray(operations)||operations.length<1||operations.length>20)throw new MagnitApiError("invalid_arguments","1–20 operations required.");
@@ -81,16 +81,16 @@ export async function runTool(name,args={}) {
       const good_id=safeId(op.good_id,"good_id"),offer_id=safeId(op.offer_id,"offer_id");
       if(op.action!=="remove") {
         if(typeof op.query!=="string"||!op.query.trim())throw new MagnitApiError("cart_item_not_verified","Query required to verify product now.");
-        const r=await searchMagnit({query:op.query,storeCode:code,mode:"express",limit:30});
+        const r=await searchMagnit({query:op.query,storeCode:code,mode,limit:30});
         registry.remember(r);
-        registry.require(code,good_id,offer_id);
+        registry.require(code,good_id,offer_id,mode);
         checked.push({action:op.action,good_id,offer_id,quantity:integer(op.quantity,1,99)});
       } else checked.push({action:"remove",good_id,offer_id});
     }
-    await selectStore(sessions,code,"express");
+    await selectStore(sessions,code,mode);
     const session=await sessions.load();
     if(!session?.cookie)throw new MagnitApiError("session_missing","Sign in via local phone UI first.");
-    return applyMagnitCart({session,storeCode:code,mode:"express",requestId:safeId(args.request_id,"request_id"),operations:checked,operationStore:journal,saveSession:s=>sessions.save(s),requireEligible:(s,g,o)=>registry.require(s,g,o)});
+    return applyMagnitCart({session,storeCode:code,mode,requestId:safeId(args.request_id,"request_id"),operations:checked,operationStore:journal,saveSession:s=>sessions.save(s),requireEligible:(s,g,o)=>registry.require(s,g,o,mode)});
   });
   throw new MagnitApiError("unknown_tool","Unknown tool");
 }
