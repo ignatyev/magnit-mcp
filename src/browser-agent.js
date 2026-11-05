@@ -37,6 +37,7 @@ function safePageUrl(raw) {
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "https:") return null;
+    try { validateShoppingUrl(raw); } catch { return null; }
     return parsed.origin + parsed.pathname.slice(0, 220);
   } catch { return null; }
 }
@@ -299,11 +300,11 @@ export async function browserAction(name, args = {}, deps = {}) {
         });
         if (!found?.ok) throw error(found?.code || "browser_click_failed",
           "Нельзя нажать элемент: " + (found?.code || "unknown"));
-        // Trusted mouse events are more compatible with React/Vue than element.click().
-        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: found.x, y: found.y,
-          button: "left", clickCount: 1 }, 10_000, sid);
-        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: found.x, y: found.y,
-          button: "left", clickCount: 1 }, 10_000, sid);
+        // Android uses touch; do not silently repeat an ambiguous gesture.
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart",
+          touchPoints: [{ x: found.x, y: found.y }] }, 10_000, sid);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd",
+          touchPoints: [] }, 10_000, sid);
         return { clicked: true, tab_id: tab.targetId, label: found.label,
           outcome_verified: false, note: "Проверьте корзину или состояние страницы. При ошибке не повторяйте клик вслепую." };
       }
