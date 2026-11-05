@@ -225,7 +225,7 @@
     },
     {
       "name": "view_cart",
-      "description": "Read account cart scoped to delivery or express. Mixed-format carts are shown read-only; delivery writes are not supported.",
+      "description": "Read account cart scoped to delivery or express. Mixed-format carts are read-only. Both services require a matching verified Chrome cart context for writes.",
       "tags": [
         "magnit",
         "shopping"
@@ -265,7 +265,7 @@
     },
     {
       "name": "add_to_cart",
-      "description": "Guarded add of an explicitly verified nonweighted product to selected Express or Delivery cart; requires browser-synced delivery context. Preserves all prior items and confirms the result.",
+      "description": "Guarded add of an explicitly verified nonweighted product to selected Express or Delivery cart; requires browser-synced context for the selected service and store. Preserves all prior items and confirms the result.",
       "tags": [
         "magnit",
         "shopping"
@@ -328,7 +328,7 @@
     },
     {
       "name": "apply_cart",
-      "description": "Guarded add/set/remove to selected Express or Delivery cart. Delivery requires browser-synced context and is confirmed by a subsequent GET; multi-format writes are rejected.",
+      "description": "Guarded add/set/remove to selected Express or Delivery cart. Requires browser-synced context for either service; all writes are confirmed by independent GET, mixed-format writes rejected.",
       "tags": [
         "magnit",
         "shopping"

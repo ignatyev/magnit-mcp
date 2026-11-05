@@ -14,3 +14,19 @@ test("Tool names are unique",()=>{
   const names=manual.tools.map(x=>x.name);
   assert.equal(new Set(names).size,names.length);
 });
+
+import { Script } from "node:vm";
+
+test("Express is the default mobile mode and embedded UI JavaScript parses", () => {
+  // The inline HTML is a JSON-compatible quoted string in src/ui.js.
+  const source = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8");
+  const match = source.match(/const page=("(?:\\.|[^"\\])*")\.replace\("__CSRF__",csrf\);/s);
+  assert.ok(match, "inline page string must be present");
+  const html = JSON.parse(match[1]);
+  assert.match(html, /<option value="express" selected>Экспресс<\/option>/);
+  assert.match(html, /<option value="delivery">Доставка<\/option>/);
+  const js = html.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(js, "client script must be present");
+  assert.doesNotThrow(() => new Script(js[1]));
+  assert.match(js[1], /mode:selectedMode/);
+});
