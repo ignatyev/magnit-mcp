@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addMagnitCartItem, applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders } from "../src/cart.js";
+import { addMagnitCartItem, applyMagnitCart, viewMagnitCart, diagnoseMagnitCartHeaders, describeMagnitCartRequest } from "../src/cart.js";
 
 const session = { cookie: "sid=synthetic-cookie", context: { service: "express", storeCode: "123456", bff: "synthetic-bff", permissionsJwt: null, observedInBrowser: true } };
 const cart = (items, formatCount = items.length) => ({ items, formats: [{ itemsCount: formatCount, service: "express", storeCode: "123456" }], totalBasePrice: 12345, totalFinalPrice: 11111, totalGoodsCount: items.length });
@@ -567,4 +567,20 @@ test("official Express HAR shape: 2 attributed and 3 unlabelled active lines rem
   assert.equal(view.items.length,5);
   assert.equal(view.items.filter(i=>i.good_service===null).length,3);
   assert.equal(view.read_only,false);
+});
+
+
+test("cart metadata never leaks cookies, token strings, bff or full user agent",()=>{
+  const observed={cookie:"sid=very-private-cookie; other=very-secret",
+    context:{service:"express",storeCode:"233472",bff:"must-not-appear",
+      observedInBrowser:true,permissionsJwt:"TOKEN_MUST_NOT_APPEAR",
+      deviceId:"secret-device-id",userAgent:"Android private-user-agent"}};
+  const report=describeMagnitCartRequest(observed);
+  assert.equal(report.cookie_count,2);
+  assert.equal(report.user_agent_family,"android");
+  assert.equal(report.permissions_kind,"token");
+  assert.equal(report.header_names.includes("cookie"),true);
+  for(const secret of ["very-private-cookie","very-secret","TOKEN_MUST_NOT_APPEAR","must-not-appear","secret-device-id","private-user-agent"]) {
+    assert.equal(JSON.stringify(report).includes(secret),false);
+  }
 });
