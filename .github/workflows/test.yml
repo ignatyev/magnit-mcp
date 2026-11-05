@@ -1,0 +1,35 @@
+name: Node tests
+on:
+  push:
+    branches: [main, migration/utcp-direct-agent]
+  pull_request:
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test
+      - run: npm run check
+      - run: python3 -m py_compile agent.py
+
+      - name: Install UTCP runtime
+        run: python3 -m pip install -r requirements.txt
+      - name: UTCP local manifest smoke test
+        run: |
+          python3 - <<'PY'
+          import asyncio
+          from agent import connect_utcp
+
+          async def check():
+              client = await connect_utcp()
+              try:
+                  result = await client.call_tool("magnit.status", {})
+                  assert result, "Expected local status result"
+                  print("UTCP local Magnit status tool works:", str(result)[:400])
+              finally:
+                  await client.close()
+          asyncio.run(check())
+          PY
