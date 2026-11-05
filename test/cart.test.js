@@ -148,7 +148,7 @@ test("browser-observed cart device headers and null permission marker are replay
 
 
 test("delivery cart uses dostavka headers and reads a different returned store safely", async () => {
-  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" } };
+  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301", observedInBrowser: false } };
   const delivery = {
     formats: [{ itemsCount: 2, service: "dostavka", storeCode: "992332" }],
     items: [
@@ -198,7 +198,7 @@ test("mixed carts display only delivery items and cannot clear pending reconcili
 });
 
 test("legacy unjournaled delivery add remains disabled before network access", async () => {
-  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301" } };
+  const sessionDelivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992301", observedInBrowser: false } };
   let calls=0;
   await assert.rejects(addMagnitCartItem({session:sessionDelivery,storeCode:"992301",mode:"delivery",
     goodId:"milk",offerId:"milk",quantity:1,fetchImpl:async()=>{calls++;return response(cart([]))}}),
@@ -272,7 +272,7 @@ test("mixed-service delivery cart never sends PUT even if session is synchronize
 
 
 test("delivery apply rejects unsynced context before journal or network", async () => {
-  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301"}};
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:false}};
   let calls=0;
   await assert.rejects(applyMagnitCart({
     session:delivery,storeCode:"992301",mode:"delivery",requestId:"request-delivery-004",
