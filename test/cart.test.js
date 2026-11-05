@@ -21,6 +21,11 @@ test("cart GET is pinned and exposes no cookie/token in its result", async () =>
   assert.equal(seen.init.method, "GET");
   assert.equal(seen.init.redirect, "error");
   assert.equal(seen.init.headers.Cookie, session.cookie);
+  assert.equal(seen.init.headers.Referer, "https://magnit.ru/");
+  assert.equal(seen.init.headers["x-new-magnit"], "true");
+  assert.equal(seen.init.headers["x-client-name"], "magnit");
+  assert.equal(seen.init.headers["x-device-platform"], "Web");
+  assert.equal(seen.init.headers.Origin, undefined, "GET must not send Origin");
   assert.equal(seen.init.headers.Authorization, undefined);
   assert.equal(JSON.stringify(result).includes(session.cookie), false);
   assert.equal(JSON.stringify(result).includes("synthetic-bff"), false);
@@ -39,6 +44,9 @@ test("add reads the cart, preserves all items, merges exact IDs, and issues one 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].init.method, "GET");
   assert.equal(calls[1].init.method, "PUT");
+  assert.equal(calls[1].init.headers.Origin, "https://magnit.ru");
+  assert.equal(calls[1].init.headers.Referer, "https://magnit.ru/");
+  assert.equal(calls[1].init.headers["x-new-magnit"], "true");
   assert.deepEqual(JSON.parse(calls[1].init.body), { items: [
     { goodId: "old-good", offerId: "old-offer", qnty: 2 },
     { goodId: "new-good", offerId: "new-offer", qnty: 4 },
@@ -101,4 +109,16 @@ test("store/service mismatch and invalid quantity are rejected before fetch", as
   await assert.rejects(addMagnitCartItem({ session, storeCode: "123456", mode: "delivery", goodId: "x", offerId: "y", quantity: 1, fetchImpl }), /режим не совпадает/);
   await assert.rejects(addMagnitCartItem({ session, storeCode: "123456", mode: "express", goodId: "x", offerId: "y", quantity: 0, fetchImpl }));
   assert.equal(calls, 0);
+});
+
+
+test("HTTP 400 surfaces only safe upstream machine code, not server secrets or free-form messages", async () => {
+  await assert.rejects(viewMagnitCart({
+    session, storeCode: "123456", mode: "express",
+    fetchImpl: async () => Response.json({ code: "INVALID_CONTEXT", message: "private-session-value" }, { status: 400 }),
+  }), (error) => error.code === "upstream_error" && /HTTP 400, код: INVALID_CONTEXT/.test(error.message) && !error.message.includes("private-session-value"));
+  await assert.rejects(viewMagnitCart({
+    session, storeCode: "123456", mode: "express",
+    fetchImpl: async () => Response.json({ code: "this-is-a-very-very-long-token:01234567890123456789012345678901234567890" }, { status: 400 }),
+  }), (error) => error.code === "upstream_error" && error.message === "Запрос корзины отклонён (HTTP 400).");
 });

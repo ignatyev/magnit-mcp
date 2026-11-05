@@ -21,6 +21,10 @@ function cartHeaders(session) {
     Accept: "application/json",
     "Content-Type": "application/json",
     Cookie: session.cookie,
+    Referer: "https://magnit.ru/",
+    "x-new-magnit": "true",
+    "x-client-name": "magnit",
+    "x-device-platform": "Web",
     "x-service": context.service,
     "x-store-code": context.storeCode,
     "x-magnit-bff": context.bff,
@@ -48,12 +52,36 @@ async function boundedJson(response) {
   catch { throw new MagnitApiError("invalid_response", "Магнит вернул некорректный JSON корзины."); }
 }
 
+// Only a short machine-readable error code may leave the upstream error response.
+// Never echo arbitrary upstream text: it may contain identifiers or tokens.
+async function safeCartErrorCode(response) {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const parts = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 4096) { await reader.cancel(); return null; }
+      parts.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
+    const body = JSON.parse(new TextDecoder().decode(bytes));
+    const code = body?.code ?? body?.errorCode ?? (typeof body?.error === "object" ? body.error?.code : body?.error);
+    return typeof code === "string" && /^[a-z][a-z0-9._:-]{1,63}$/i.test(code) ? code : null;
+  } catch { return null; }
+}
+
 async function cartRequest(session, method, body, fetchImpl, timeoutMs) {
   let response;
   try {
     response = await fetchImpl(CART_URL, {
       method,
-      headers: cartHeaders(session),
+      headers: { ...cartHeaders(session), ...(method === "PUT" ? { Origin: "https://magnit.ru" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
@@ -64,11 +92,12 @@ async function cartRequest(session, method, body, fetchImpl, timeoutMs) {
     throw new MagnitApiError(code, message);
   }
   if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
+    const upstreamCode = response.status === 400 ? await safeCartErrorCode(response) : null;
+    if (response.status !== 400) await response.body?.cancel().catch(() => {});
     if (response.status === 403) throw new MagnitApiError("access_denied", "Магнит ограничил доступ к корзине.");
     if (response.status === 401) throw new MagnitApiError("session_rejected", "Магнит отклонил сессию. Завершите вход и перечитайте корзину.");
     if (method === "PUT") throw new MagnitApiError("ambiguous_result", `Ответ Магнит на изменение корзины: HTTP ${response.status}. Перечитайте корзину перед любым повторным добавлением.`);
-    throw new MagnitApiError("upstream_error", `Запрос корзины отклонён (HTTP ${response.status}).`);
+    throw new MagnitApiError("upstream_error", `Запрос корзины отклонён (HTTP ${response.status}${upstreamCode ? `, код: ${upstreamCode}` : ""}).`);
   }
   try { return await boundedJson(response); }
   catch (cause) {
