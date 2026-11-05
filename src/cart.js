@@ -355,11 +355,14 @@ export async function applyMagnitCart({ session, storeCode, mode, requestId, ope
     } else if (!(before.items.length === 0 && before.formats.length === 0)) throw new MagnitApiError("cart_format_ambiguous", "Корзина содержит неизвестное число форматов.");
     const items = new Map();
     for (const item of before.items) {
-      if (typeof item?.goodId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(item.goodId) || typeof item?.offerId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(item.offerId) || !Number.isSafeInteger(item?.qnty) || item.qnty < 1) throw new MagnitApiError("cart_item_shape_unverified", "В корзине есть позиция с неизвестным ID или количеством; пакет остановлен.");
+      if (typeof item?.goodId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(item.goodId) || typeof item?.offerId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(item.offerId) || !Number.isSafeInteger(item?.qnty) || item.qnty < 0) throw new MagnitApiError("cart_item_shape_unverified", "В корзине есть позиция с неизвестным ID или количеством; пакет остановлен.");
       if ((item.goodStoreCode != null && String(item.goodStoreCode) !== formatStoreCode) || (item.goodService != null && String(item.goodService) !== active.context.service)) throw new MagnitApiError("cart_context_ambiguous", "В корзине обнаружен другой магазин или сервис.");
       const key = keyFor(item.goodId, item.offerId);
       if (items.has(key)) throw new MagnitApiError("cart_duplicate_item_ambiguous", "В корзине есть повторяющиеся ID; пакет остановлен.");
-      items.set(key, { goodId: item.goodId, offerId: item.offerId, qnty: item.qnty });
+      // The observed delivery API returns zero-quantity ghost entries; the
+      // actual successful PUT omits these entries. Keep all positive lines,
+      // including their weight quantities in grams.
+      if (item.qnty > 0) items.set(key, { goodId: item.goodId, offerId: item.offerId, qnty: item.qnty });
     }
     for (const op of normalized) {
       const key = keyFor(op.good_id, op.offer_id), current = items.get(key);
