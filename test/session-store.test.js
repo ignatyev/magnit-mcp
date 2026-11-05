@@ -161,3 +161,12 @@ test("public snapshot exposes only redacted header names and counts",()=>{
   assert.equal(JSON.stringify(out).includes("SECRET"),false);
   assert.equal(JSON.stringify(out).includes("sid=private"),false);
 });
+
+test("public cookie-source status never exposes session Cookie values",()=>{
+ const original={cookie:"sid=private-secret-value",cookieSource:"official_cart_request",
+   context:{service:"express",storeCode:"230668",bff:"private-bff",observedInBrowser:true}};
+ const state=publicSessionState(original);
+ assert.equal(state.cookie_source,"official_cart_request");
+ assert.equal(JSON.stringify(state).includes("private-secret-value"),false);
+ assert.equal(JSON.stringify(state).includes("private-bff"),false);
+});
