@@ -29,7 +29,7 @@ test("search issues the fixed Magnit POST and explicit delivery payload", async 
   assert.equal(seen.init.headers.Origin, "https://magnit.ru");
   assert.deepEqual(JSON.parse(seen.init.body), {
     term: "молоко", pagination: { limit: 5, offset: 0 }, sort: { order: "desc", type: "popularity" },
-    includeAdultGoods: true, storeCode: "123456", storeType: "dostavka", catalogType: "3",
+    includeAdultGoods: true, storeCode: "123456", storeType: "dostavka", catalogType: "2",
   });
   assert.equal(result.products[0].price_kopecks, 16999);
   assert.equal(result.products[0].price_rubles, 169.99);
@@ -92,7 +92,7 @@ test("input validation bounds store code, query, and page size before fetch", as
 });
 
 test("categories use the fixed path and mode-specific query names", async () => {
-  assert.equal(magnitCategoriesUrl("123456", "delivery"), "https://magnit.ru/webgate/v3/categories/store/123456?storetype=dostavka&catalogtype=3");
+  assert.equal(magnitCategoriesUrl("123456", "delivery"), "https://magnit.ru/webgate/v3/categories/store/123456?storetype=dostavka&catalogtype=2");
   assert.equal(magnitCategoriesUrl("123456", "retail"), "https://magnit.ru/webgate/v3/categories/store/123456?storetype=1&catalogtype=1");
   let seen;
   const result = await getMagnitCategories({ storeCode: "123456", mode: "retail", fetchImpl: async (url, init) => { seen = { url, init }; return jsonResponse({ items: [{ id: 1, name: "Молочные", children: [{ id: 2, name: "Сыр" }] }] }); } });
@@ -171,4 +171,30 @@ test("catalog returns safe blocker reasons without granting unsound delivery car
   assert.deepEqual(products[2].cart_add_blockers,["weighted_or_unknown"]);
   assert.deepEqual(products[3].cart_add_blockers,["product_id_mismatch"]);
   assert.equal(products[3].good_id,null);
+});
+
+test("regression: official Chrome delivery catalog type 2 exposes addable dostavka products", async () => {
+  // Real Chrome HAR: storeType=dostavka and catalogType=2 for ordinary delivery.
+  // The item is synthetic; fields mirror the safe, nonweighted HAR response shape.
+  const product = {
+    id: "milk-001", productId: "milk-001", service: "dostavka", targetCart: "dostavka",
+    storeCode: "992332", name: "Milk", price: 16999, quantity: 7,
+    weighted: { isWeighted: false }, orderProperties: { minOrderQuantity: 1, orderStepQuantity: 1 },
+    isAdditionalActionRequired: false, isBiometryRequired: false, isForAdults: false,
+    needPassport: false, pickupOnly: false,
+  };
+  let payload;
+  const result = await searchMagnit({
+    query: "молоко", storeCode: "992332", mode: "delivery",
+    fetchImpl: async (_url, init) => {
+      payload = JSON.parse(init.body);
+      return jsonResponse({ items: [product] });
+    },
+  });
+  assert.equal(payload.storeType, "dostavka");
+  assert.equal(payload.catalogType, "2");
+  assert.equal(result.products.length, 1);
+  assert.equal(result.products[0].cart_addable, true);
+  assert.deepEqual(result.products[0].cart_add_blockers, []);
+  assert.equal(result.products[0].cart_add_rule, "constrained-delivery-catalog-v1");
 });
