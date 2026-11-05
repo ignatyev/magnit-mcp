@@ -7,6 +7,7 @@ import { createCartOperationStore } from "./cart-operation-store.js";
 import { createCartEligibilityRegistry } from "./cart-eligibility.js";
 import { getMagnitOrderHistory, getMagnitShoppingContext } from "./shopping-context.js";
 import { loadOrCreateOwnerSecret } from "./local-owner.js";
+import { withMagnitChrome } from "./chrome-transport.js";
 
 // This runs on the user's own device; all Magnit calls are native HTTPS requests.
 let promise;
@@ -58,15 +59,35 @@ export function sessionForSelectedStore(session, storeCode, mode) {
 export async function runTool(name,args={}) {
   if(!args||typeof args!=="object"||Array.isArray(args))throw new MagnitApiError("invalid_arguments","Expected JSON object.");
   const {sessions,journal}=await state();
-  if(name==="status")return {transport:"utcp-cli",session:publicSessionState(await sessions.load()),login_url:"http://127.0.0.1:"+(process.env.PORT||8080),live_compatibility:"unverified",checkout_supported:false};
-  if(name==="search_products"){
-    const r=await searchMagnit({query:args.query,storeCode:validateStoreCode(args.store_code),mode:args.mode||"express",limit:integer(args.limit,20,30)});
-    return r;
-  }
-  if(name==="list_categories")return getMagnitCategories({storeCode:validateStoreCode(args.store_code),mode:args.mode||"express"});
-  if(name==="product_details")return getMagnitProductDetails({productId:safeId(args.product_id,"product_id"),storeCode:validateStoreCode(args.store_code),mode:"express"});
-  if(name==="shopping_context")return getMagnitShoppingContext({session:await sessions.load()});
-  if(name==="order_history")return getMagnitOrderHistory({session:await sessions.load(),page:integer(args.page,1,100),limit:integer(args.limit,10,30)});
+  if(name==="status")return {transport:"utcp-chrome-cdp",session:publicSessionState(await sessions.load()),login_url:"http://127.0.0.1:"+(process.env.PORT||8080),live_compatibility:"unverified",checkout_supported:false};
+  if(name==="search_products")return locked(async()=>{
+    const {code,mode}=store(args);
+    const session=sessionForSelectedStore(await sessions.load(),code,mode);
+    return withMagnitChrome({session,operation:fetchImpl=>searchMagnit({
+      query:args.query,storeCode:code,mode,limit:integer(args.limit,20,30),fetchImpl,
+    })});
+  });
+  if(name==="list_categories")return locked(async()=>{
+    const {code,mode}=store(args);
+    const session=sessionForSelectedStore(await sessions.load(),code,mode);
+    return withMagnitChrome({session,operation:fetchImpl=>getMagnitCategories({
+      storeCode:code,mode,fetchImpl,
+    })});
+  });
+  if(name==="product_details")return locked(async()=>{
+    const code=validateStoreCode(args.store_code);
+    const session=sessionForSelectedStore(await sessions.load(),code,"express");
+    return withMagnitChrome({session,operation:fetchImpl=>getMagnitProductDetails({
+      productId:safeId(args.product_id,"product_id"),storeCode:code,mode:"express",fetchImpl,
+    })});
+  });
+  if(name==="shopping_context"||name==="order_history")return locked(async()=>{
+    const session=await sessions.load();
+    return withMagnitChrome({session,operation:fetchImpl=>name==="shopping_context"
+      ?getMagnitShoppingContext({session,fetchImpl})
+      :getMagnitOrderHistory({session,page:integer(args.page,1,100),
+        limit:integer(args.limit,10,30),fetchImpl})});
+  });
   if(name==="collect_debug_report")return locked(async()=>{
     const {code,mode}=store(args);
     const saved=await sessions.load();
@@ -128,6 +149,12 @@ export async function runTool(name,args={}) {
       report.transport_matrix={ok:false,error_code:safeError(cause)};
     }
     try {
+      report.chrome_runtime=await withMagnitChrome({session:selected,operation:fetchImpl=>
+        diagnoseMagnitCartHeaders({session:selected,storeCode:code,mode,fetchImpl})});
+    } catch(cause) {
+      report.chrome_runtime={ok:false,error_code:safeError(cause)};
+    }
+    try {
       const catalog=await searchMagnit({query:"молоко",storeCode:code,mode,limit:20});
       const blockers=Object.create(null);
       for(const p of catalog.products) {
@@ -160,29 +187,40 @@ export async function runTool(name,args={}) {
     const saved = await sessions.load();
     const selected = sessionForSelectedStore(saved, code, mode);
     // Reads of a different context must not persist the temporary context.
-    return viewMagnitCart({session:selected,storeCode:code,mode,operationStore:journal,
-      saveSession:s=>selected===saved?sessions.save(s):Promise.resolve()});
+    return withMagnitChrome({session:selected,operation:fetchImpl=>viewMagnitCart({
+      session:selected,storeCode:code,mode,fetchImpl,operationStore:journal,
+      saveSession:s=>selected===saved?sessions.save(s):Promise.resolve(),
+    })});
   });
   if(name==="add_to_cart"||name==="apply_cart")return locked(async()=>{
     const {code,mode}=store(args,true);
-    const registry=createCartEligibilityRegistry();
-    const operations=name==="add_to_cart"?[{action:"add",good_id:args.good_id,offer_id:args.offer_id,quantity:args.quantity,query:args.query}]:args.operations;
-    if(!Array.isArray(operations)||operations.length<1||operations.length>20)throw new MagnitApiError("invalid_arguments","1–20 operations required.");
-    const checked=[];
-    for(const op of operations) {
-      if(!op||!["add","set","remove"].includes(op.action))throw new MagnitApiError("invalid_arguments","Invalid action.");
-      const good_id=safeId(op.good_id,"good_id"),offer_id=safeId(op.offer_id,"offer_id");
-      if(op.action!=="remove") {
-        if(typeof op.query!=="string"||!op.query.trim())throw new MagnitApiError("cart_item_not_verified","Query required to verify product now.");
-        const r=await searchMagnit({query:op.query,storeCode:code,mode,limit:30});
-        registry.remember(r);
-        registry.require(code,good_id,offer_id,mode);
-        checked.push({action:op.action,good_id,offer_id,quantity:integer(op.quantity,1,99)});
-      } else checked.push({action:"remove",good_id,offer_id});
-    }
     const session=sessionForSelectedStore(await sessions.load(),code,mode);
     if(!session?.cookie)throw new MagnitApiError("session_missing","Sign in via local phone UI first.");
-    return applyMagnitCart({session,storeCode:code,mode,requestId:safeId(args.request_id,"request_id"),operations:checked,operationStore:journal,saveSession:s=>sessions.save(s),requireEligible:(s,g,o)=>registry.require(s,g,o,mode)});
+    const operations=name==="add_to_cart"
+      ?[{action:"add",good_id:args.good_id,offer_id:args.offer_id,quantity:args.quantity,query:args.query}]
+      :args.operations;
+    if(!Array.isArray(operations)||operations.length<1||operations.length>20)
+      throw new MagnitApiError("invalid_arguments","1–20 operations required.");
+    return withMagnitChrome({session,operation:async fetchImpl=>{
+      const registry=createCartEligibilityRegistry();
+      const checked=[];
+      for(const op of operations) {
+        if(!op||!["add","set","remove"].includes(op.action))
+          throw new MagnitApiError("invalid_arguments","Invalid action.");
+        const good_id=safeId(op.good_id,"good_id"),offer_id=safeId(op.offer_id,"offer_id");
+        if(op.action!=="remove"){
+          if(typeof op.query!=="string"||!op.query.trim())
+            throw new MagnitApiError("cart_item_not_verified","Query required to verify product now.");
+          const r=await searchMagnit({query:op.query,storeCode:code,mode,limit:30,fetchImpl});
+          registry.remember(r);
+          registry.require(code,good_id,offer_id,mode);
+          checked.push({action:op.action,good_id,offer_id,quantity:integer(op.quantity,1,99)});
+        } else checked.push({action:"remove",good_id,offer_id});
+      }
+      return applyMagnitCart({session,storeCode:code,mode,requestId:safeId(args.request_id,"request_id"),
+        operations:checked,fetchImpl,operationStore:journal,saveSession:s=>sessions.save(s),
+        requireEligible:(s,g,o)=>registry.require(s,g,o,mode)});
+    }});
   });
   throw new MagnitApiError("unknown_tool","Unknown tool");
 }

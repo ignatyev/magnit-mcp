@@ -222,7 +222,7 @@ async function responseJson(response, maxBytes = MAX_DEBUG_JSON) {
   return JSON.parse(await readDebugText(response, maxBytes));
 }
 
-class CdpClient extends EventEmitter {
+export class CdpClient extends EventEmitter {
   constructor(ws) {
     super();
     this.ws = ws;

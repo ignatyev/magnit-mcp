@@ -30,7 +30,7 @@
     },
     {
       "name": "search_products",
-      "description": "Search Magnit catalogue; return verified product IDs for express cart.",
+      "description": "Search Magnit catalogue; return verified product IDs for express cart. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -51,8 +51,7 @@
             "type": "string",
             "enum": [
               "express",
-              "delivery",
-              "retail"
+              "delivery"
             ]
           },
           "limit": {
@@ -84,7 +83,7 @@
     },
     {
       "name": "list_categories",
-      "description": "Read catalog categories.",
+      "description": "Read catalog categories. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -99,8 +98,7 @@
             "type": "string",
             "enum": [
               "express",
-              "delivery",
-              "retail"
+              "delivery"
             ]
           }
         },
@@ -125,7 +123,7 @@
     },
     {
       "name": "product_details",
-      "description": "Read product data; not a cart eligibility check.",
+      "description": "Read product data; not a cart eligibility check. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -161,7 +159,7 @@
     },
     {
       "name": "shopping_context",
-      "description": "Read saved store and redacted delivery address.",
+      "description": "Read saved store and redacted delivery address. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -187,7 +185,7 @@
     },
     {
       "name": "order_history",
-      "description": "Read prior orders; items are not cart product IDs.",
+      "description": "Read prior orders; items are not cart product IDs. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -225,7 +223,7 @@
     },
     {
       "name": "view_cart",
-      "description": "Read account cart scoped to delivery or express. Mixed-format carts are read-only. Both services require a matching verified Chrome cart context for writes.",
+      "description": "Read account cart scoped to delivery or express. Mixed-format carts are read-only. Both services require a matching verified Chrome cart context for writes. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -265,7 +263,7 @@
     },
     {
       "name": "add_to_cart",
-      "description": "Guarded add of an explicitly verified nonweighted product to selected Express or Delivery cart; requires browser-synced context for the selected service and store. Preserves all prior items and confirms the result.",
+      "description": "Guarded add of an explicitly verified nonweighted product to selected Express or Delivery cart; requires browser-synced context for the selected service and store. Preserves all prior items and confirms the result. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
@@ -328,7 +326,7 @@
     },
     {
       "name": "apply_cart",
-      "description": "Guarded add/set/remove to selected Express or Delivery cart. Requires browser-synced context for either service; all writes are confirmed by independent GET, mixed-format writes rejected.",
+      "description": "Guarded add/set/remove to selected Express or Delivery cart. Requires browser-synced context for either service; all writes are confirmed by independent GET, mixed-format writes rejected. Uses the official Android Chrome session through local ADB/CDP; never falls back to direct Node HTTPS.",
       "tags": [
         "magnit",
         "shopping"
