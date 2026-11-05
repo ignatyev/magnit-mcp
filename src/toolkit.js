@@ -97,6 +97,7 @@ export async function runTool(name,args={}) {
           publicState.service===(mode==="delivery"?"dostavka":"express") &&
           publicState.store_code===code,
         reconciliation_required:publicState.cart_reconciliation_required,
+        cookie_source:publicState.cookie_source,
       },
       official_android_chrome:snapshot,
       adapter_request_metadata:local,

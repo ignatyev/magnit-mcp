@@ -82,6 +82,23 @@ function allowedCartHeaders(headers) {
   return safe;
 }
 
+// Trust the Cookie header only from a successful official Chrome request to
+// the exact Magnit cart endpoint. Keep the browser's transmitted order and
+// duplicate cookie names; CDP Network.getCookies can return a different subset.
+export function extractObservedCartCookie(headers) {
+  const pairs=Object.entries(headers || {}).filter(([name])=>name.toLowerCase()==="cookie");
+  if(pairs.length!==1 || typeof pairs[0][1]!=="string") return null;
+  const raw=pairs[0][1];
+  if(Buffer.byteLength(raw,"utf8")>8192 || !raw || /[^\x20-\x7e]/.test(raw)) return null;
+  const crumbs=raw.split(";");
+  if(crumbs.length>100 || crumbs.some(crumb=>{
+    const trimmed=crumb.trim();
+    const index=trimmed.indexOf("=");
+    return index<=0 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(trimmed.slice(0,index))
+      || /[;\r\n\x00-\x1f\x7f]/.test(trimmed.slice(index+1));
+  })) return null;
+  return raw;
+}
 export function magnitCookieHeader(cookies) {
   const pairs = [];
   for (const cookie of Array.isArray(cookies) ? cookies : []) {
@@ -281,6 +298,7 @@ export class AndroidMagnitLogin {
     this.context = null;
     this.cartSnapshot = null;
     this.cartCaptureComplete = false;
+    this.observedCartCookie = null;
     this.cancelRequested = false;
   }
 
@@ -376,6 +394,7 @@ export class AndroidMagnitLogin {
       this.cartRequests.set(requestId, { headers: allowedCartHeaders(request.headers),
           headerNames: knownHeaderNames(request.headers),
           browserCookieCount: safeBrowserCookieCount(request.headers),
+          requestCookie: extractObservedCartCookie(request.headers),
           confirmed: false });
     }
     if (typeof params?.requestId === "string" && typeof request?.url === "string") {
@@ -396,6 +415,8 @@ export class AndroidMagnitLogin {
       pending.headerNames = [...new Set([...pending.headerNames, ...knownHeaderNames(params.headers)])].sort();
       const count = safeBrowserCookieCount(params.headers);
       if (count !== null) pending.browserCookieCount = count;
+      const browserCookie = extractObservedCartCookie(params.headers);
+      if (browserCookie) pending.requestCookie = browserCookie;
       if (pending.confirmed) this.context = safeContext(pending.headers) || this.context;
     }
   }
@@ -425,6 +446,9 @@ export class AndroidMagnitLogin {
       const observed = safeContext(pendingCart.headers);
       if (observed) {
         this.context = observed;
+        // Only a successful 200 response with the exact cart URL can supply
+        // the replayable Cookie. The header is kept encrypted and not logged.
+        this.observedCartCookie = pendingCart.requestCookie || null;
         try {
           const result = await this.cdp?.send("Network.getResponseBody", { requestId }, 10_000, this.sessionId);
           if (!this.closed && typeof result?.body === "string" && result.body.length <= 350_000) {
@@ -466,12 +490,15 @@ export class AndroidMagnitLogin {
     try {
       const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] }, 10_000, this.sessionId);
       if (this.closed) return;
-      const cookie = magnitCookieHeader(result?.cookies);
+      const cookie = this.requireCartContext && this.observedCartCookie
+        ? this.observedCartCookie : magnitCookieHeader(result?.cookies);
       if (!cookie || !this.authenticated || this.verifying || this.sessionSaveStarted) return;
       this.sessionSaveStarted = true;
       this.verifying = true;
       this.setState("verifying", "Вход подтверждён. Сохраняем сессию Магнит…");
       const session = { cookie, context: this.context || null,
+        cookieSource: this.requireCartContext && this.observedCartCookie
+          ? "official_cart_request" : "cookie_store_filtered",
         ...(this.cartSnapshot ? { browserCartSnapshot: this.cartSnapshot } : {}) };
       try {
         await this.saveSession(session);

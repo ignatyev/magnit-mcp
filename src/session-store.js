@@ -124,7 +124,10 @@ const publicSnapshot = matches ? {
       && snap.browser_cookie_count>=0 && snap.browser_cookie_count<=100
       ? snap.browser_cookie_count : null,
   } : null;
-  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true, browser_cart_snapshot: publicSnapshot } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false, browser_cart_snapshot: null };
+  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true,
+    cookie_source: ["official_cart_request","cookie_store_filtered"].includes(session.cookieSource)
+      ? session.cookieSource : "unknown",
+    browser_cart_snapshot: publicSnapshot } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false, cookie_source: null, browser_cart_snapshot: null };
 }
 
 export function bindSearchContext(session, storeCode, mode = "express") {
