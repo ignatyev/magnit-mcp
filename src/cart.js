@@ -8,10 +8,13 @@ let reconciliationRequired = false;
 
 function requireSession(session, storeCode, mode) {
   if (!session?.cookie) throw new MagnitApiError("session_missing", "Сначала войдите в Магнит на телефоне и сохраните сессию.");
-  if (session?.context?.service !== "express" || !session?.context?.storeCode || !session?.context?.bff) throw new MagnitApiError("store_context_required", "Сначала найдите товар в режиме «Экспресс» и выберите код магазина.");
+  if (!["express", "dostavka"].includes(session?.context?.service) || !session?.context?.storeCode || !session?.context?.bff)
+    throw new MagnitApiError("store_context_required", "Сначала выберите магазин и сервис доставки.");
   const selectedStoreCode = validateStoreCode(storeCode);
   validateStoreCode(session.context.storeCode);
-  if (mode !== "express" || selectedStoreCode !== session.context.storeCode) throw new MagnitApiError("context_mismatch", "Код магазина или режим не совпадает с выбранным магазином корзины.");
+  const service = mode === "delivery" ? "dostavka" : mode === "express" ? "express" : null;
+  if (!service || service !== session.context.service || selectedStoreCode !== session.context.storeCode)
+    throw new MagnitApiError("context_mismatch", "Код магазина или режим не совпадает с выбранным магазином корзины.");
   return session;
 }
 
@@ -129,16 +132,6 @@ function cartView(data, context) {
   if (!Array.isArray(data.formats) || data.formats.length > 20)
     throw new MagnitApiError("invalid_response", "Магнит вернул неизвестную структуру форматов корзины.");
 
-  const totals_lite = {
-    base_price_raw: typeof data.totalBasePrice === "number" ? data.totalBasePrice : null,
-    final_price_raw: typeof data.totalFinalPrice === "number" ? data.totalFinalPrice : null,
-    goods_count: Number.isSafeInteger(data.totalGoodsCount) ? data.totalGoodsCount : null,
-    is_checkout_quote: false,
-    note: "Сводка lite-корзины; не является итогом оформления заказа.",
-  };
-  // The lite endpoint returns the account cart, not necessarily a single
-  // store/service. A multi-format response is safe to display, but NOT to PUT:
-  // item ownership can be absent even when format metadata is present.
   const formats = data.formats.map((format) => {
     let storeCode = null;
     try { storeCode = validateStoreCode(String(format?.storeCode ?? "")); } catch {}
@@ -148,61 +141,81 @@ function cartView(data, context) {
       items_count: Number.isSafeInteger(format?.itemsCount) && format.itemsCount >= 0 && format.itemsCount <= 250 ? format.itemsCount : null,
     };
   });
-  const items = data.items.map((item) => {
+  const selectedFormats = formats.filter((format) => format.service === context.service);
+  const singleFormat = data.formats.length === 1 && selectedFormats.length === 1;
+  let unattributed = 0;
+  const items = [];
+  for (const item of data.items) {
+    const service = typeof item?.goodService === "string" ? item.goodService : null;
+    // Do not silently ascribe an unlabelled item to delivery when multiple
+    // services share the account cart. Such items remain unknown.
+    if (service !== context.service && !(service == null && singleFormat)) {
+      if (service == null) unattributed++;
+      continue;
+    }
     let itemStore = null;
     if (item?.goodStoreCode != null) {
       try { itemStore = validateStoreCode(String(item.goodStoreCode)); } catch {}
     }
-    return {
+    items.push({
       good_id: typeof item?.goodId === "string" ? item.goodId.slice(0, 128) : null,
       offer_id: typeof item?.offerId === "string" ? item.offerId.slice(0, 128) : null,
       quantity: Number.isSafeInteger(item?.qnty) ? item.qnty : null,
-      // These fields are literal per-item server metadata, not an inferred
-      // association with one of the returned formats.
       good_store_code: itemStore,
-      good_service: typeof item?.goodService === "string" && /^[a-zA-Z0-9_-]{1,32}$/.test(item.goodService) ? item.goodService : null,
+      good_service: service,
       quantity_increment: item?.increment && typeof item.increment === "object"
         ? { unit: typeof item.increment.unit === "string" ? item.increment.unit.slice(0, 40) : null, value: Number.isFinite(item.increment.value) ? item.increment.value : null }
         : null,
       catalog_price_raw: Number.isSafeInteger(item?.catalogPrice) ? item.catalogPrice : null,
-    };
-  });
+    });
+  }
+  const multi = data.formats.length > 1;
+  const totals_lite = {
+    base_price_raw: typeof data.totalBasePrice === "number" ? data.totalBasePrice : null,
+    final_price_raw: typeof data.totalFinalPrice === "number" ? data.totalFinalPrice : null,
+    goods_count: Number.isSafeInteger(data.totalGoodsCount) ? data.totalGoodsCount : null,
+    is_checkout_quote: false,
+    applies_to_selected_service: !multi && singleFormat,
+    note: multi
+      ? "Общая сумма всех форматов корзины; не является стоимостью выбранной доставки."
+      : "Сводка lite-корзины; не является итогом оформления заказа.",
+  };
   const common = {
     store_code: context.storeCode,
     request_store_code: context.storeCode,
     service: context.service,
     formats,
+    selected_formats: selectedFormats,
     items,
+    unattributed_items_count: unattributed,
     totals_lite,
   };
-
   if (data.formats.length === 0 && data.items.length === 0) {
-    return { ...common, cart_store_code: null, read_only: false, cart_context_status: "empty", warning: null };
+    return { ...common, cart_store_code: null, read_only: context.service === "dostavka",
+      cart_context_status: "empty", warning: context.service === "dostavka" ? "Изменение корзины доставки пока не поддерживается." : null };
   }
-  if (data.formats.length !== 1) {
-    const multiple = data.formats.length > 1;
-    return {
-      ...common,
-      cart_store_code: null,
-      read_only: true,
-      cart_context_status: multiple ? "multiple_formats" : "formats_missing",
-      warning: multiple
-        ? "Магнит вернул несколько форматов корзины. Все позиции показаны без предположений об их принадлежности; изменение заблокировано во избежание потери товаров."
-        : "Магнит вернул товары без сведений о формате корзины. Изменение заблокировано во избежание потери товаров.",
-    };
+  if (selectedFormats.length === 0) {
+    return { ...common, cart_store_code: null, read_only: true, cart_context_status: "selected_format_missing",
+      warning: "В ответе нет корзины выбранного сервиса. Показываем только позиции, явно относящиеся к нему; изменение запрещено." };
   }
-
-  const format = data.formats[0];
-  const cartStoreCode = formats[0].store_code;
+  if (multi || selectedFormats.length !== 1) {
+    return { ...common, cart_store_code: selectedFormats.length === 1 ? selectedFormats[0].store_code : null,
+      read_only: true, cart_context_status: "multiple_formats",
+      warning: "Магнит вернул несколько форматов. Показаны только позиции выбранного сервиса; неоднозначные позиции не включены. Изменение корзины запрещено." };
+  }
+  const format = data.formats[0], cartStoreCode = selectedFormats[0].store_code;
   if (!cartStoreCode) throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не содержит допустимый код магазина.");
-  if (format?.service !== context.service || !Number.isSafeInteger(format?.itemsCount) || format.itemsCount < 0 || format.itemsCount > 250)
-    throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не совпадает с express-контекстом.");
+  if (!Number.isSafeInteger(format?.itemsCount) || format.itemsCount < 0 || format.itemsCount > 250)
+    throw new MagnitApiError("cart_context_ambiguous", "Формат корзины не содержит допустимое количество товаров.");
   for (const item of data.items) {
     if ((item?.goodStoreCode != null && String(item.goodStoreCode) !== cartStoreCode) ||
         (item?.goodService != null && String(item.goodService) !== context.service))
       throw new MagnitApiError("cart_context_ambiguous", "В корзине обнаружен другой магазин или сервис.");
   }
-  return { ...common, cart_store_code: cartStoreCode, read_only: false, cart_context_status: "single_format", warning: null };
+  const readOnly = context.service === "dostavka";
+  return { ...common, cart_store_code: cartStoreCode, read_only: readOnly,
+    cart_context_status: "single_format",
+    warning: readOnly ? "Корзина доставки доступна для просмотра; изменение пока не подтверждено и отключено." : null };
 }
 
 export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore = null }) {
@@ -222,6 +235,7 @@ export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fet
 
 export async function addMagnitCartItem({ session, storeCode, mode, goodId, offerId, quantity, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore = null }) {
   const active = requireSession(session, storeCode, mode);
+  if (mode !== "express") throw new MagnitApiError("unsupported_mode", "Добавление в корзину доставки пока не поддерживается.");
   if (typeof goodId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(goodId)) throw new Error("good_id должен быть явным идентификатором товара.");
   if (typeof offerId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(offerId)) throw new Error("offer_id должен быть явным идентификатором предложения.");
   if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("quantity должен быть целым числом от 1 до 99.");
@@ -313,6 +327,7 @@ function normalizeCartOperations(operations) {
 
 export async function applyMagnitCart({ session, storeCode, mode, requestId, operations, fetchImpl = fetch, timeoutMs = 15_000, saveSession = async () => {}, operationStore, requireEligible = async () => {} }) {
   const active = requireSession(session, storeCode, mode);
+  if (mode !== "express") throw new MagnitApiError("unsupported_mode", "Изменение корзины доставки пока не поддерживается.");
   if (!operationStore) throw new MagnitApiError("idempotency_unavailable", "Защищённое состояние пакетной операции не настроено.");
   if (typeof requestId !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(requestId)) throw new MagnitApiError("invalid_arguments", "request_id должен содержать 8–128 допустимых символов.");
   const normalized = normalizeCartOperations(operations);
