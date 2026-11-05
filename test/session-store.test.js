@@ -110,3 +110,27 @@ test("HAR parser recognizes observed delivery cart context", () => {
   assert.equal(r.ok,true);
   assert.equal(r.session.context.service,"dostavka");
 });
+
+
+test("temporary cart selection does not clobber the verified browser context on disk", async () => {
+  const { sessionForSelectedStore } = await import("../src/toolkit.js");
+  const dir = await mkdtemp(join(tmpdir(), "magnit-context-preservation-"));
+  try {
+    const saved = { cookie: "synthetic", context: {
+      service: "dostavka", storeCode: "992301", bff: "1", observedInBrowser: true,
+      deviceId: "browser-observed-id",
+    } };
+    const store = createEncryptedSessionStore({ secret: "synthetic secret length over thirty two characters", filename: join(dir, "session.enc") });
+    await store.save(saved);
+    const temp = sessionForSelectedStore(await store.load(), "992332", "delivery");
+    assert.equal(temp.context.storeCode, "992332");
+    assert.equal(temp.context.observedInBrowser, false);
+    assert.equal(publicSessionState(await store.load()).cart_context_ready, true);
+    assert.equal((await store.load()).context.storeCode, "992301");
+    const express = sessionForSelectedStore(await store.load(), "230779", "express");
+    assert.equal(express.context.service, "express");
+    assert.equal(express.context.observedInBrowser, false);
+    assert.equal((await store.load()).context.service, "dostavka");
+    assert.equal(sessionForSelectedStore(await store.load(), "992301", "delivery").context.observedInBrowser, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
