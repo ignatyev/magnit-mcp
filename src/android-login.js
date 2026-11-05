@@ -42,6 +42,7 @@ export function magnitCookieHeader(cookies) {
   for (const cookie of Array.isArray(cookies) ? cookies : []) {
     if (typeof cookie?.name !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(cookie.name)) continue;
     if (typeof cookie.value !== "string" || /[\r\n\0;]/.test(cookie.value)) continue;
+    if (cookie.secure !== true) continue;
     const domain = String(cookie.domain || "").toLowerCase();
     if (domain !== "magnit.ru" && domain !== ".magnit.ru") continue;
     const path = typeof cookie.path === "string" && cookie.path.startsWith("/") ? cookie.path : "/";
