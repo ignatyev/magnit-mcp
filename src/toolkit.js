@@ -46,11 +46,14 @@ async function locked(fn) {
   try{return await fn();}finally{await fd.close();await unlink(p);}
 }
 export async function getLocalSessionStore(){return (await state()).sessions;}
-async function selectStore(sessions,storeCode,mode) {
-  const s=await sessions.load();
-  const service=mode==="delivery"?"dostavka":"express";
-  if(s?.cookie&&(s.context?.storeCode!==storeCode||s.context?.service!==service))
-    await sessions.save(bindSearchContext(s,storeCode,mode));
+// A search or read of another store must not overwrite the verified Chrome
+// cart context. The request x-store-code can differ from formats.storeCode.
+export function sessionForSelectedStore(session, storeCode, mode) {
+  if (!session?.cookie) return session;
+  const service = mode === "delivery" ? "dostavka" : mode === "express" ? "express" : null;
+  if (!service) throw new MagnitApiError("unsupported_mode", "Only delivery or express cart is supported");
+  if (session.context?.storeCode === storeCode && session.context?.service === service) return session;
+  return bindSearchContext(session, storeCode, mode);
 }
 export async function runTool(name,args={}) {
   if(!args||typeof args!=="object"||Array.isArray(args))throw new MagnitApiError("invalid_arguments","Expected JSON object.");
@@ -58,7 +61,6 @@ export async function runTool(name,args={}) {
   if(name==="status")return {transport:"utcp-cli",session:publicSessionState(await sessions.load()),login_url:"http://127.0.0.1:"+(process.env.PORT||8080),live_compatibility:"unverified",checkout_supported:false};
   if(name==="search_products"){
     const r=await searchMagnit({query:args.query,storeCode:validateStoreCode(args.store_code),mode:args.mode||"express",limit:integer(args.limit,20,30)});
-    if(["express","delivery"].includes(r.mode))await selectStore(sessions,r.store_code,r.mode);
     return r;
   }
   if(name==="list_categories")return getMagnitCategories({storeCode:validateStoreCode(args.store_code),mode:args.mode||"express"});
@@ -67,8 +69,11 @@ export async function runTool(name,args={}) {
   if(name==="order_history")return getMagnitOrderHistory({session:await sessions.load(),page:integer(args.page,1,100),limit:integer(args.limit,10,30)});
   if(name==="view_cart")return locked(async()=>{
     const {code,mode}=store(args);
-    await selectStore(sessions,code,mode);
-    return viewMagnitCart({session:await sessions.load(),storeCode:code,mode,operationStore:journal,saveSession:s=>sessions.save(s)});
+    const saved = await sessions.load();
+    const selected = sessionForSelectedStore(saved, code, mode);
+    // Reads of a different context must not persist the temporary context.
+    return viewMagnitCart({session:selected,storeCode:code,mode,operationStore:journal,
+      saveSession:s=>selected===saved?sessions.save(s):Promise.resolve()});
   });
   if(name==="add_to_cart"||name==="apply_cart")return locked(async()=>{
     const {code,mode}=store(args,true);
@@ -87,8 +92,7 @@ export async function runTool(name,args={}) {
         checked.push({action:op.action,good_id,offer_id,quantity:integer(op.quantity,1,99)});
       } else checked.push({action:"remove",good_id,offer_id});
     }
-    await selectStore(sessions,code,mode);
-    const session=await sessions.load();
+    const session=sessionForSelectedStore(await sessions.load(),code,mode);
     if(!session?.cookie)throw new MagnitApiError("session_missing","Sign in via local phone UI first.");
     return applyMagnitCart({session,storeCode:code,mode,requestId:safeId(args.request_id,"request_id"),operations:checked,operationStore:journal,saveSession:s=>sessions.save(s),requireEligible:(s,g,o)=>registry.require(s,g,o,mode)});
   });
