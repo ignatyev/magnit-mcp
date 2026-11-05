@@ -225,7 +225,7 @@
     },
     {
       "name": "view_cart",
-      "description": "Read and reconcile cart; totals are not checkout quotes.",
+      "description": "Read account cart scoped to delivery or express. Mixed-format carts are shown read-only; delivery writes are not supported.",
       "tags": [
         "magnit",
         "shopping"
@@ -235,10 +235,18 @@
         "properties": {
           "store_code": {
             "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "delivery",
+              "express"
+            ]
           }
         },
         "required": [
-          "store_code"
+          "store_code",
+          "mode"
         ],
         "additionalProperties": false
       },
@@ -249,7 +257,7 @@
         "call_template_type": "cli",
         "commands": [
           {
-            "command": "node --env-file-if-exists=.env src/tool-cli.js view_cart UTCP_ARG_store_code_UTCP_END"
+            "command": "node --env-file-if-exists=.env src/tool-cli.js view_cart UTCP_ARG_store_code_UTCP_END UTCP_ARG_mode_UTCP_END"
           }
         ],
         "working_dir": "."
