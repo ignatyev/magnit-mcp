@@ -1,8 +1,29 @@
 import { MagnitApiError, validateStoreCode } from "./magnit-api.js";
 import { createHash } from "node:crypto";
+import { connect as http2Connect } from "node:http2";
+import { gunzipSync, inflateSync, brotliDecompressSync } from "node:zlib";
 
 const CART_URL = "https://magnit.ru/webgate/v1/carts/lite";
 const MAX_CART_BYTES = 1_000_000;
+const PARITY_HEADER_KEYS = new Set([
+  "accept-language","sec-ch-ua","sec-ch-ua-mobile","sec-ch-ua-platform",
+  "sec-fetch-site","sec-fetch-mode","sec-fetch-dest","priority",
+]);
+function safeParityHeaderValues(raw) {
+  const selected={};
+  for(const [key,value] of Object.entries(raw || {})) {
+    const name=key.toLowerCase();
+    if(!PARITY_HEADER_KEYS.has(name) || typeof value!=="string" ||
+       value.length>180 || !/^[\x20-\x7e]+$/.test(value)) continue;
+    if(name==="sec-fetch-site" && value!=="same-origin") continue;
+    if(name==="sec-fetch-mode" && value!=="cors") continue;
+    if(name==="sec-fetch-dest" && value!=="empty") continue;
+    if(name==="sec-ch-ua-mobile" && !["?0","?1"].includes(value)) continue;
+    selected[name]=value;
+  }
+  return selected;
+}
+
 let writeQueue = Promise.resolve();
 let reconciliationRequired = false;
 
@@ -110,7 +131,7 @@ async function safeCartErrorCode(response) {
   } catch { return null; }
 }
 
-async function cartRequest(session, method, body, fetchImpl, timeoutMs, { browserParity = true } = {}) {
+async function cartRequest(session, method, body, fetchImpl, timeoutMs, { browserParity = true, browserClientHints = false } = {}) {
   let response;
   try {
     const outgoingHeaders = cartHeaders(session);
@@ -118,6 +139,8 @@ async function cartRequest(session, method, body, fetchImpl, timeoutMs, { browse
     // successful GET and PUT. Normal operations follow those headers.
     // Preserve the former header only for the read-only legacy GET comparison.
     if (!browserParity && method === "GET") outgoingHeaders["x-new-magnit"] = "true";
+    if (method === "GET" && browserClientHints) Object.assign(outgoingHeaders,
+      safeParityHeaderValues(session.context.browserParityHeaders));
     response = await fetchImpl(CART_URL, {
       method,
       headers: { ...outgoingHeaders, ...(method === "PUT" ? { Origin: "https://magnit.ru" } : {}) },
@@ -290,6 +313,102 @@ export async function diagnoseMagnitCartHeaders({ session, storeCode, mode, fetc
     chrome_headers: await sample(true),
     changes_written: false,
     note: "Два последовательных запроса GET, ни одного PUT. Ответы могут измениться между чтениями.",
+  };
+}
+
+// A GET-only diagnostic. It uses exactly one pinned origin and never follows
+// redirects. HTTP/2 testing is separate from all cart mutation paths.
+async function http2CartGet(session,{ browserClientHints=false, timeoutMs=15000, connectImpl=http2Connect }={}) {
+  const h=cartHeaders(session);
+  if(browserClientHints) Object.assign(h,safeParityHeaderValues(session.context.browserParityHeaders));
+  const requestHeaders={
+    ":method":"GET",":scheme":"https",":authority":"magnit.ru",":path":"/webgate/v1/carts/lite",
+  };
+  for(const [key,value] of Object.entries(h))requestHeaders[key.toLowerCase()]=value;
+  // Keep the response decompressible using stable built-in Node codecs.
+  requestHeaders["accept-encoding"]="gzip, deflate, br";
+  return new Promise((resolve,reject)=>{
+    let completed=false,sessionClient,stream;
+    const finish=(err,value)=>{
+      if(completed)return;
+      completed=true;
+      clearTimeout(timer);
+      try{stream?.close();}catch{}
+      try{sessionClient?.destroy();}catch{}
+      if(err)reject(err);else resolve(value);
+    };
+    const timer=setTimeout(()=>finish(new MagnitApiError("timeout","HTTP/2 GET timed out")),timeoutMs);
+    try { sessionClient=connectImpl("https://magnit.ru",{ALPNProtocols:["h2"]}); }
+    catch { finish(new MagnitApiError("upstream_unavailable","HTTP/2 setup failed")); return; }
+    sessionClient.on("error",()=>finish(new MagnitApiError("upstream_unavailable","HTTP/2 connection failed")));
+    sessionClient.on("connect",()=>{
+      if(sessionClient.alpnProtocol !== "h2") {
+        finish(new MagnitApiError("protocol_mismatch","HTTP/2 not negotiated"));return;
+      }
+      let responseHeaders=null,bytes=0;
+      const chunks=[];
+      try { stream=sessionClient.request(requestHeaders); }
+      catch { finish(new MagnitApiError("upstream_unavailable","HTTP/2 request rejected"));return; }
+      stream.on("response",headers=>{responseHeaders=headers;});
+      stream.on("data",chunk=>{
+        bytes+=chunk.length;
+        if(bytes>MAX_CART_BYTES){finish(new MagnitApiError("invalid_response","HTTP/2 body too large"));return;}
+        chunks.push(chunk);
+      });
+      stream.on("end",()=>{
+        if(completed)return;
+        const status=Number(responseHeaders?.[":status"]);
+        if(status!==200){
+          finish(new MagnitApiError("upstream_error","HTTP/2 cart returned status "+(Number.isInteger(status)?status:"unknown")));
+          return;
+        }
+        try{
+          let raw=Buffer.concat(chunks);
+          const encoding=String(responseHeaders?.["content-encoding"]||"").toLowerCase();
+          if(encoding==="gzip")raw=gunzipSync(raw,{maxOutputLength:MAX_CART_BYTES});
+          else if(encoding==="deflate")raw=inflateSync(raw,{maxOutputLength:MAX_CART_BYTES});
+          else if(encoding==="br")raw=brotliDecompressSync(raw,{maxOutputLength:MAX_CART_BYTES});
+          else if(encoding && encoding!=="identity")throw Error("unsupported compression");
+          if(raw.length>MAX_CART_BYTES)throw Error("large");
+          finish(null,JSON.parse(raw.toString("utf8")));
+        }catch{finish(new MagnitApiError("invalid_response","HTTP/2 JSON or content encoding invalid"));}
+      });
+      stream.on("error",()=>finish(new MagnitApiError("upstream_unavailable","HTTP/2 stream failed")));
+      stream.end();
+    });
+  });
+}
+
+export async function diagnoseMagnitTransportMatrix({
+  session,storeCode,mode,fetchImpl=fetch,timeoutMs=15000,http2GetImpl=http2CartGet,
+}) {
+  const active=requireSession(session,storeCode,mode);
+  const hints=safeParityHeaderValues(active.context.browserParityHeaders);
+  const available=Object.keys(hints);
+  async function sample(probe) {
+    try{
+      const data=await probe();
+      const v=cartView(data,active.context);
+      return {ok:true,raw_item_count:v.raw_item_count,raw_format_count:v.raw_format_count,
+        selected_format_count:v.selected_formats.length,
+        unattributed_item_count:v.unattributed_items_count,
+        read_only:v.read_only,cart_context_status:v.cart_context_status};
+    } catch(cause){
+      return {ok:false,error_code:cause instanceof MagnitApiError?cause.code:"diagnostic_failed"};
+    }
+  }
+  return {
+    method:"GET",request_store_code:active.context.storeCode,
+    browser_header_value_names:available.sort(),browser_header_values_available:available.length>0,
+    node_fetch_with_browser_values:available.length>0
+      ? await sample(()=>cartRequest(active,"GET",null,fetchImpl,timeoutMs,{browserClientHints:true}))
+      : {ok:false,error_code:"browser_values_not_captured"},
+    node_http2_baseline:await sample(()=>http2GetImpl(active,{timeoutMs,browserClientHints:false})),
+    node_http2_with_browser_values:available.length>0
+      ? await sample(()=>http2GetImpl(active,{timeoutMs,browserClientHints:true}))
+      : {ok:false,error_code:"browser_values_not_captured"},
+    writes_performed:0,
+    note:"Все пробы делают только GET. Разница между Node.js и Chrome может сохраняться из-за TLS-отпечатка и прочих особенностей сетевого стека.",
   };
 }
 
