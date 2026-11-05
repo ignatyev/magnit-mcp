@@ -115,6 +115,9 @@ test("Android login observes official auth on its own CDP tab, saves cookie, and
   assert.equal(saved.browserCartSnapshot.raw_item_count,1);
   assert.equal(saved.browserCartSnapshot.raw_format_count,1);
   assert.equal(saved.browserCartSnapshot.selected_format_count,1);
+  assert.equal(saved.browserCartSnapshot.browser_cookie_count,null);
+  assert.equal(saved.browserCartSnapshot.request_header_names.includes("x-service"),true);
+  assert.equal(saved.browserCartSnapshot.request_header_names.includes("cookie"),true);
   assert.equal(JSON.stringify(saved).includes("synthetic-secret-id"),false);
   assert.equal(httpCalls.filter(x=>x.url===CART_URL).length,0);
   assert(cdpCalls.includes("Target.createTarget"));
@@ -180,4 +183,16 @@ test("safe Chrome response summary keeps counts, never raw cart data", () => {
   assert.equal(JSON.stringify(snapshot).includes("private"),false);
   assert.equal(JSON.stringify(snapshot).includes("secret"),false);
   assert.equal(safeObservedCartSnapshot("bad json",observed),null);
+});
+
+test("browser metadata includes only known names and cookie count, not token values",()=>{
+  const snap=safeObservedCartSnapshot(JSON.stringify({items:[],formats:[]}),
+    {service:"express",storeCode:"233472"},{
+      headerNames:["x-service","cookie","Authorization","x-unknown-secret","x-service"],
+      browserCookieCount:3,
+    });
+  assert.deepEqual(snap.request_header_names,["cookie","x-service"]);
+  assert.equal(snap.browser_cookie_count,3);
+  assert.equal(JSON.stringify(snap).includes("Authorization"),false);
+  assert.equal(JSON.stringify(snap).includes("x-unknown-secret"),false);
 });
