@@ -24,7 +24,7 @@ export function validateStoreCode(value) {
 
 export function catalogMode(mode) {
   if (mode === "express") return { mode, storeType: "express", catalogType: "2" };
-  if (mode === "delivery") return { mode, storeType: "dostavka", catalogType: "3" };
+  if (mode === "delivery") return { mode, storeType: "dostavka", catalogType: "2" };
   if (mode === "retail") return { mode, storeType: "1", catalogType: "1" };
   throw new Error("mode must be delivery or retail.");
 }
