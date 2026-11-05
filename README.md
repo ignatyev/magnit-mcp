@@ -10,6 +10,7 @@
     pkg install nodejs-lts python git android-tools
     git clone https://github.com/ignatyev/magnit-mcp.git
     cd magnit-mcp
+    git checkout migration/utcp-direct-agent
     cp .env.example .env
     npm test
     npm run check
