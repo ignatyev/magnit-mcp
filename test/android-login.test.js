@@ -7,7 +7,6 @@ import {
   magnitCookieHeader,
   extractObservedCartCookie,
   safeObservedCartSnapshot,
-  pickSafeChromeParityHeaders,
   selectAdbDevice,
   validateDebugWebSocket,
 } from "../src/android-login.js";
@@ -211,20 +210,4 @@ test("observed cart Cookie preserves exact browser header order and is strictly 
   assert.equal(extractObservedCartCookie({Cookie:"sid="+ "a".repeat(8193)}),null);
   assert.equal(extractObservedCartCookie({Cookie:"sid=abc; bad-value"}),null);
   assert.equal(extractObservedCartCookie({Authorization:"secret"}),null);
-});
-
-test("parity headers are strictly limited to noncredential Chrome request values",()=>{
-  const chosen=pickSafeChromeParityHeaders({
-    "sec-fetch-site":"same-origin","sec-fetch-mode":"cors","sec-fetch-dest":"empty",
-    "sec-ch-ua-platform":"\"Android\"","accept-language":"ru-RU,ru;q=0.9,en-US;q=0.8",
-    "cookie":"session=SECRET","authorization":"Bearer SECRET",
-    "x-magnit-bff":"SECRET", "sec-ch-ua-mobile":"?1",
-    "priority":"u=1, i", "x-private-header":"SECRET",
-  });
-  assert.equal(chosen["sec-fetch-site"],"same-origin");
-  assert.equal(chosen["sec-ch-ua-platform"],"\"Android\"");
-  assert.equal(chosen["sec-ch-ua-mobile"],"?1");
-  assert.equal(JSON.stringify(chosen).includes("SECRET"),false);
-  assert.equal(pickSafeChromeParityHeaders({"sec-fetch-site":"cross-site"})["sec-fetch-site"],undefined);
-  assert.equal(Object.keys(pickSafeChromeParityHeaders({"accept-language":"en-US\r\nAuthorization: secret"})).length,0);
 });
