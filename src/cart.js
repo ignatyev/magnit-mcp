@@ -191,10 +191,13 @@ function cartView(data, context) {
     totals_lite,
   };
   if (data.formats.length === 0 && data.items.length === 0) {
-    const locked = context.service === "dostavka" && context.observedInBrowser !== true;
+    // The account may have items in the official browser even when a differently
+    // scoped direct GET returns empty. Never PUT the resulting empty snapshot:
+    // doing so could overwrite an existing delivery basket.
+    const locked = context.service === "dostavka";
     return { ...common, cart_store_code: null, read_only: locked,
       cart_context_status: "empty", warning: locked
-        ? "Для изменения пустой корзины доставки синхронизируйте её в официальном Chrome и проверьте магазин."
+        ? "Магнит вернул пустую корзину доставки для текущего запроса. Изменение заблокировано: сначала сверьте выбранный магазин, способ доставки и корзину в официальном Chrome."
         : null };
   }
   if (selectedFormats.length === 0) {
