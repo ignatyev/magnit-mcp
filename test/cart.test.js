@@ -338,3 +338,21 @@ test("delivery HAR: preserve grams and omit zero-quantity ghost lines on PUT", a
   assert.equal(result.cart_context_status,"single_format");
   assert.equal(result.read_only,false);
 });
+
+
+test("cart diagnostic distinguishes server-empty from filtered service and never returns raw secrets", async () => {
+  const delivery={cookie:session.cookie,context:{...session.context,service:"dostavka",storeCode:"992301",observedInBrowser:false}};
+  const empty=await viewMagnitCart({session:delivery,storeCode:"992301",mode:"delivery",fetchImpl:async()=>response({items:[],formats:[]})});
+  assert.equal(empty.raw_item_count,0);
+  assert.equal(empty.raw_format_count,0);
+  assert.equal(empty.browser_context_verified,false);
+  const mixed=await viewMagnitCart({session:delivery,storeCode:"992301",mode:"delivery",fetchImpl:async()=>response({
+    formats:[{service:"express",storeCode:"233826",itemsCount:1}],
+    items:[{goodId:"e1",offerId:"o1",qnty:1,goodService:"express"}],
+  })});
+  assert.equal(mixed.raw_item_count,1);
+  assert.equal(mixed.items.length,0);
+  assert.equal(mixed.excluded_other_service_count,1);
+  assert.equal(mixed.cart_context_status,"selected_format_missing");
+  assert.equal(JSON.stringify(mixed).includes(session.cookie),false);
+});
