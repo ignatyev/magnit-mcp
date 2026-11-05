@@ -22,7 +22,7 @@ function safeContext(headers) {
     const text = typeof value === "string" ? value : Array.isArray(value) ? value.join(",") : "";
     if (text.length > 0 && text.length <= 8192 && !/[\r\n\0]/.test(text)) normalized[name] = text;
   }
-  if (normalized["x-service"] !== "express") return null;
+  if (!["express", "dostavka"].includes(normalized["x-service"])) return null;
   try { validateStoreCode(normalized["x-store-code"]); } catch { return null; }
   if (!normalized["x-magnit-bff"]) return null;
   const result = {
@@ -304,7 +304,7 @@ export class AndroidMagnitLogin {
       if (typeof navigation?.errorText === "string" && navigation.errorText) throw new Error("page_navigation_failed");
       if (this.cancelRequested) throw Object.assign(new Error("cancelled"), { code: "cancelled", publicMessage: "Вход отменён." });
       this.setState("waiting", this.requireCartContext
-        ? "Откройте корзину выбранного Экспресс-магазина в официальной вкладке Магнит. Сохраним параметры только после успешного чтения корзины сайтом."
+        ? "Откройте корзину нужной доставки в официальной вкладке Магнит. Сохраним параметры только после успешного чтения корзины сайтом."
         : "Завершите вход в официальной вкладке Магнит. Если вы уже вошли в Chrome, дождитесь проверки.");
       this.deadline = Date.now() + this.timeoutMs;
       this.timer = setInterval(() => void this.pollCookies(), this.intervalMs);
