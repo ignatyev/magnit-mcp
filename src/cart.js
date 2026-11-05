@@ -230,7 +230,7 @@ export async function viewMagnitCart({ session, storeCode, mode, fetchImpl = fet
     // pending writes against a particular store or format.
     if (view.read_only) return view;
     reconciliationRequired = false;
-    if (operationStore) await operationStore.reconcile({ sessionFingerprint: operationStore.fingerprint(active.cookie), storeCode: active.context.storeCode, cartSummary: { item_count: view.items.length, request_store_code: view.request_store_code } });
+    if (operationStore) await operationStore.reconcile({ sessionFingerprint: operationStore.fingerprint(active.cookie), storeCode: active.context.service === "dostavka" ? `dostavka:${active.context.storeCode}` : active.context.storeCode, cartSummary: { item_count: view.items.length, request_store_code: view.request_store_code } });
     if (active.cartReconciliationRequired) await saveSession({ ...active, cartReconciliationRequired: false });
     return view;
   });
@@ -336,11 +336,12 @@ export async function applyMagnitCart({ session, storeCode, mode, requestId, ope
   if (typeof requestId !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(requestId)) throw new MagnitApiError("invalid_arguments", "request_id должен содержать 8–128 допустимых символов.");
   const normalized = normalizeCartOperations(operations);
   const fingerprint = operationStore.fingerprint(active.cookie);
+  const journalStoreCode = mode === "delivery" ? `dostavka:${active.context.storeCode}` : active.context.storeCode;
   const payloadHash = createHash("sha256").update(JSON.stringify({ store_code: validateStoreCode(storeCode), mode, operations: normalized })).digest("hex");
   return serializeCartOperation(async () => {
     const previous = await operationStore.inspect({ requestId, sessionFingerprint: fingerprint, payloadHash });
     if (previous.replay) return { request_id: requestId, replayed: true, replay_status: previous.status, historical_result: previous.result, verified_at: previous.verifiedAt, current_cart: false };
-    await operationStore.assertWritable({ sessionFingerprint: fingerprint, storeCode: active.context.storeCode });
+    await operationStore.assertWritable({ sessionFingerprint: fingerprint, storeCode: journalStoreCode });
     if (reconciliationRequired || active.cartReconciliationRequired) throw new MagnitApiError("cart_reconciliation_required", "После неопределённого изменения сначала явно перечитайте корзину.");
     for (const op of normalized) if (op.action !== "remove") await requireEligible(storeCode, op.good_id, op.offer_id, op.action);
     const before = await cartRequest(active, "GET", null, fetchImpl, timeoutMs);
@@ -376,7 +377,7 @@ export async function applyMagnitCart({ session, storeCode, mode, requestId, ope
     }
     const expectedItems = [...items.values()];
     if (expectedItems.length > 250) throw new MagnitApiError("cart_limit_exceeded", "Пакет превысит безопасный предел позиций корзины.");
-    await operationStore.begin({ requestId, sessionFingerprint: fingerprint, payloadHash, storeCode: active.context.storeCode });
+    await operationStore.begin({ requestId, sessionFingerprint: fingerprint, payloadHash, storeCode: journalStoreCode });
     let after;
     try { after = await cartRequest(active, "PUT", { items: expectedItems }, fetchImpl, timeoutMs); }
     catch (cause) { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw cause; }
