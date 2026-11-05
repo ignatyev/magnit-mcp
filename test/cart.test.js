@@ -22,7 +22,7 @@ test("cart GET is pinned and exposes no cookie/token in its result", async () =>
   assert.equal(seen.init.redirect, "error");
   assert.equal(seen.init.headers.Cookie, session.cookie);
   assert.equal(seen.init.headers.Referer, "https://magnit.ru/");
-  assert.equal(seen.init.headers["x-new-magnit"], "true");
+  assert.equal(seen.init.headers["x-new-magnit"], undefined);
   assert.equal(seen.init.headers["x-client-name"], "magnit");
   assert.equal(seen.init.headers["x-device-platform"], "Web");
   assert.equal(seen.init.headers.Origin, undefined, "GET must not send Origin");
@@ -46,7 +46,7 @@ test("add reads the cart, preserves all items, merges exact IDs, and issues one 
   assert.equal(calls[1].init.method, "PUT");
   assert.equal(calls[1].init.headers.Origin, "https://magnit.ru");
   assert.equal(calls[1].init.headers.Referer, "https://magnit.ru/");
-  assert.equal(calls[1].init.headers["x-new-magnit"], "true");
+  assert.equal(calls[1].init.headers["x-new-magnit"], undefined);
   assert.deepEqual(JSON.parse(calls[1].init.body), { items: [
     { goodId: "old-good", offerId: "old-offer", qnty: 2 },
     { goodId: "new-good", offerId: "new-offer", qnty: 4 },
@@ -539,4 +539,32 @@ test("diagnostic GET errors do not throw, write or expose upstream content", asy
   assert.equal(out.legacy.ok, false);
   assert.equal(out.chrome_headers.ok, false);
   assert.equal(JSON.stringify(out).includes("secret"), false);
+});
+
+
+test("official Express HAR shape: 2 attributed and 3 unlabelled active lines remain visible", async () => {
+  const observed={ cookie:"sid=synthetic", context:{service:"express",storeCode:"233472",bff:"synthetic",observedInBrowser:true}};
+  const raw={
+    formats:[{service:"express",storeCode:"233472",itemsCount:2}],
+    items:[
+      {goodId:"known-one",offerId:"known-one",qnty:800,goodService:"express",increment:{unit:"weight",value:100}},
+      {goodId:"known-two",offerId:"known-two",qnty:1200,goodService:"express",increment:{unit:"weight",value:100}},
+      {goodId:"unknown-one",offerId:"unknown-one",qnty:800},
+      {goodId:"unknown-two",offerId:"unknown-two",qnty:1},
+      {goodId:"unknown-three",offerId:"unknown-three",qnty:1},
+    ],
+  };
+  let req;
+  const view=await viewMagnitCart({session:observed,storeCode:"233472",mode:"express",
+    fetchImpl:async (_url,init)=>{req=init;return response(raw);}});
+  assert.equal(req.method,"GET");
+  assert.equal(req.headers["x-new-magnit"],undefined);
+  assert.equal(req.headers["x-service"],"express");
+  assert.equal(req.headers["x-store-code"],"233472");
+  assert.equal(view.raw_item_count,5);
+  assert.equal(view.raw_format_count,1);
+  assert.equal(view.selected_formats[0].items_count,2);
+  assert.equal(view.items.length,5);
+  assert.equal(view.items.filter(i=>i.good_service===null).length,3);
+  assert.equal(view.read_only,false);
 });

@@ -25,7 +25,6 @@ function cartHeaders(session) {
     "Content-Type": "application/json",
     Cookie: session.cookie,
     Referer: "https://magnit.ru/",
-    "x-new-magnit": "true",
     "x-client-name": "magnit",
     "x-device-platform": "Web",
     "x-service": context.service,
@@ -90,13 +89,14 @@ async function safeCartErrorCode(response) {
   } catch { return null; }
 }
 
-async function cartRequest(session, method, body, fetchImpl, timeoutMs, { browserParity = false } = {}) {
+async function cartRequest(session, method, body, fetchImpl, timeoutMs, { browserParity = true } = {}) {
   let response;
   try {
     const outgoingHeaders = cartHeaders(session);
-    // The captured official Chrome cart GET does not send x-new-magnit,
-    // while our legacy adapter did. Compare this safely using GET only.
-    if (browserParity && method === "GET") delete outgoingHeaders["x-new-magnit"];
+    // The official Express Chrome HAR (Nov 5) omits x-new-magnit on both
+    // successful GET and PUT. Normal operations follow those headers.
+    // Preserve the former header only for the read-only legacy GET comparison.
+    if (!browserParity && method === "GET") outgoingHeaders["x-new-magnit"] = "true";
     response = await fetchImpl(CART_URL, {
       method,
       headers: { ...outgoingHeaders, ...(method === "PUT" ? { Origin: "https://magnit.ru" } : {}) },
