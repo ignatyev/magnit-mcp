@@ -96,20 +96,25 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
 
 export function publicSessionState(session) {
   const contextReady = !!(session?.context?.storeCode && session.context.service === "express");
-  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady, cart_http_access: "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false };
+  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false };
 }
 
 export function bindExpressSearchContext(session, storeCode) {
   if (!session?.cookie) return session;
   if (typeof storeCode !== "string" || !/^\d{4,8}$/.test(storeCode)) throw new Error("store_code должен содержать 4–8 цифр.");
   const previous = session.context;
-  return {
-    ...session,
-    context: {
-      service: "express",
-      storeCode,
-      bff: "1",
-      permissionsJwt: previous?.service === "express" && previous.storeCode === storeCode ? previous.permissionsJwt || null : null,
-    },
+  const sameStore = previous?.service === "express" && previous.storeCode === storeCode;
+  const context = {
+    service: "express",
+    storeCode,
+    bff: previous?.bff || "1",
+    permissionsJwt: sameStore ? previous.permissionsJwt || null : null,
+    observedInBrowser: sameStore && previous.observedInBrowser === true,
   };
+  // Device/app identity is tied to the browser, not the selected store.
+  // An observed context for a different store is no longer considered verified.
+  for (const key of ["deviceId", "deviceTag", "appVersion", "platformVersion", "userAgent"]) {
+    if (typeof previous?.[key] === "string") context[key] = previous[key];
+  }
+  return { ...session, context };
 }
