@@ -96,7 +96,21 @@ export function createEncryptedSessionStore({ secret, filename = "./data/magnit-
 
 export function publicSessionState(session) {
   const contextReady = !!(session?.context?.storeCode && ["express", "dostavka"].includes(session.context.service));
-  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false };
+  const snap = session?.browserCartSnapshot;
+  const matches = contextReady && session.context.observedInBrowser === true &&
+    snap?.source === "official_android_chrome" &&
+    snap.service === session.context.service &&
+    snap.request_store_code === session.context.storeCode &&
+    [snap.raw_item_count, snap.raw_format_count, snap.selected_format_count,
+      snap.unattributed_item_count].every(n=>Number.isSafeInteger(n)&&n>=0&&n<=250);
+  const publicSnapshot = matches ? {
+    raw_item_count: snap.raw_item_count,
+    raw_format_count: snap.raw_format_count,
+    selected_format_count: snap.selected_format_count,
+    unattributed_item_count: snap.unattributed_item_count,
+    captured_at: typeof snap.captured_at === "string" ? snap.captured_at.slice(0,32) : null,
+  } : null;
+  return session ? { ready: true, auth_saved: true, context_ready: contextReady, cart_context_ready: contextReady && session.context.observedInBrowser === true, cart_http_access: session.context?.observedInBrowser === true ? "browser_observed" : "unverified", store_code: contextReady ? session.context.storeCode : null, service: contextReady ? session.context.service : null, cart_reconciliation_required: session.cartReconciliationRequired === true, browser_cart_snapshot: publicSnapshot } : { ready: false, auth_saved: false, context_ready: false, cart_context_ready: false, cart_http_access: "unverified", store_code: null, service: null, cart_reconciliation_required: false, browser_cart_snapshot: null };
 }
 
 export function bindSearchContext(session, storeCode, mode = "express") {

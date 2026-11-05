@@ -5,6 +5,7 @@ import {
   extractCartRequestContext,
   isMagnitAuthenticated,
   magnitCookieHeader,
+  safeObservedCartSnapshot,
   selectAdbDevice,
   validateDebugWebSocket,
 } from "../src/android-login.js";
@@ -66,7 +67,7 @@ class FakeWebSocket {
     cdpCalls.push(method);
     const result=method==="Target.createTarget"?{targetId:"page-id"}
       :method==="Target.attachToTarget"?{sessionId:"session-id"}
-      :method==="Network.getResponseBody"?{body:'{"authorized":true}',base64Encoded:false}
+      :method==="Network.getResponseBody"?{body:JSON.stringify({authorized:true,formats:[{service:"express",storeCode:"123456",itemsCount:1}],items:[{goodId:"synthetic-secret-id",offerId:"synthetic-secret-id",qnty:1,goodService:"express"}]}),base64Encoded:false}
       :method==="Network.getCookies"?{cookies:[{name:"sid",value:"synthetic-cookie",domain:".magnit.ru",path:"/",secure:true,expires:-1}]}
       :{};
     queueMicrotask(()=>{
@@ -111,6 +112,10 @@ test("Android login observes official auth on its own CDP tab, saves cookie, and
   assert.equal(saved.cookie,"sid=synthetic-cookie");
   assert.deepEqual(saved.context,{service:"express",storeCode:"123456",bff:"synthetic-context",permissionsJwt:"null",observedInBrowser:true,deviceId:"synthetic-device-uuid",deviceTag:"synthetic-device-tag",appVersion:"2026.11.3-14.45",platformVersion:"Android Chrome 156",userAgent:"synthetic-browser-ua"});
   assert.equal(JSON.stringify(saved).includes("never-expose"), false);
+  assert.equal(saved.browserCartSnapshot.raw_item_count,1);
+  assert.equal(saved.browserCartSnapshot.raw_format_count,1);
+  assert.equal(saved.browserCartSnapshot.selected_format_count,1);
+  assert.equal(JSON.stringify(saved).includes("synthetic-secret-id"),false);
   assert.equal(httpCalls.filter(x=>x.url===CART_URL).length,0);
   assert(cdpCalls.includes("Target.createTarget"));
   assert(cdpCalls.includes("Target.closeTarget"));
@@ -160,4 +165,19 @@ test("HTTP 400 in the browser cannot confirm synchronization even with cart head
   assert.equal(saved, false);
   assert.equal(login.snapshot().status, "waiting");
   await login.cancel();
+});
+
+test("safe Chrome response summary keeps counts, never raw cart data", () => {
+  const observed={service:"express",storeCode:"233472"};
+  const snapshot=safeObservedCartSnapshot(JSON.stringify({
+    items:[{goodId:"private-id",qnty:1},{goodId:"other-private",qnty:800,goodService:"express"}],
+    formats:[{service:"express",storeCode:"233472",itemsCount:1}],
+    id:"secret-cart",address:"secret-address",
+  }),observed);
+  assert.equal(snapshot.raw_item_count,2);
+  assert.equal(snapshot.raw_format_count,1);
+  assert.equal(snapshot.unattributed_item_count,1);
+  assert.equal(JSON.stringify(snapshot).includes("private"),false);
+  assert.equal(JSON.stringify(snapshot).includes("secret"),false);
+  assert.equal(safeObservedCartSnapshot("bad json",observed),null);
 });

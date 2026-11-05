@@ -214,6 +214,26 @@ class CdpClient extends EventEmitter {
   close() { try { this.ws.close(); } catch {} }
 }
 
+// Store only redacted response counts from the official Android Chrome GET.
+export function safeObservedCartSnapshot(rawBody, observedContext) {
+  let body;
+  try { body = JSON.parse(rawBody); } catch { return null; }
+  if (!body || !Array.isArray(body.items) || !Array.isArray(body.formats) ||
+      body.items.length > 250 || body.formats.length > 20 || !observedContext ||
+      !["express", "dostavka"].includes(observedContext.service) ||
+      !/^\d{4,8}$/.test(observedContext.storeCode)) return null;
+  return {
+    source: "official_android_chrome",
+    service: observedContext.service,
+    request_store_code: observedContext.storeCode,
+    raw_item_count: body.items.length,
+    raw_format_count: body.formats.length,
+    selected_format_count: body.formats.filter(f=>f?.service === observedContext.service).length,
+    unattributed_item_count: body.items.filter(item=>typeof item?.goodService !== "string").length,
+    captured_at: new Date().toISOString(),
+  };
+}
+
 export class AndroidMagnitLogin {
   constructor({ saveSession, requireCartContext = false, requestedSerial = process.env.ANDROID_DEVICE_SERIAL || "", exec = async (args) => (await execFile("adb", args, { encoding: "utf8", timeout: 12_000, maxBuffer: 64 * 1024 })).stdout, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, intervalMs = 1500, timeoutMs = 5 * 60_000 }) {
     this.saveSession = saveSession;
@@ -233,6 +253,8 @@ export class AndroidMagnitLogin {
     this.authenticated = false;
     this.verifying = false;
     this.context = null;
+    this.cartSnapshot = null;
+    this.cartCaptureComplete = false;
     this.cancelRequested = false;
   }
 
@@ -367,7 +389,21 @@ export class AndroidMagnitLogin {
     const requestId = params?.requestId;
     if (typeof requestId !== "string") return;
     const pendingCart = this.cartRequests.get(requestId);
-    if (pendingCart?.confirmed) this.context = safeContext(pendingCart.headers) || this.context;
+    if (pendingCart?.confirmed) {
+      const observed = safeContext(pendingCart.headers);
+      if (observed) {
+        this.context = observed;
+        try {
+          const result = await this.cdp?.send("Network.getResponseBody", { requestId }, 10_000, this.sessionId);
+          if (!this.closed && typeof result?.body === "string" && result.body.length <= 350_000) {
+            const bytes = result.base64Encoded ? Buffer.from(result.body, "base64") : Buffer.from(result.body, "utf8");
+            if (bytes.length <= 256_000)
+              this.cartSnapshot = safeObservedCartSnapshot(bytes.toString("utf8"), observed);
+          }
+        } catch { /* Diagnostic response is optional. No raw data is retained. */ }
+        finally { this.cartCaptureComplete = true; }
+      }
+    }
     this.cartRequests.delete(requestId);
     const confirmed = this.authRequestIds.get(requestId) === true;
     this.authRequestIds.delete(requestId);
@@ -390,7 +426,7 @@ export class AndroidMagnitLogin {
       return;
     }
     if (!this.authenticated) return;
-    if (this.requireCartContext && !this.context) return;
+    if (this.requireCartContext && (!this.context || !this.cartCaptureComplete)) return;
     this.polling=true;
     try {
       const result = await this.cdp.send("Network.getCookies", { urls: [CART_URL] }, 10_000, this.sessionId);
@@ -400,7 +436,8 @@ export class AndroidMagnitLogin {
       this.sessionSaveStarted = true;
       this.verifying = true;
       this.setState("verifying", "Вход подтверждён. Сохраняем сессию Магнит…");
-      const session = { cookie, context: this.context || null };
+      const session = { cookie, context: this.context || null,
+        ...(this.cartSnapshot ? { browserCartSnapshot: this.cartSnapshot } : {}) };
       try {
         await this.saveSession(session);
         this.setState("ready", "Вход сохранён. Для работы с корзиной выберите магазин в поиске.");
