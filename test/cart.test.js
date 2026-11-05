@@ -356,3 +356,70 @@ test("cart diagnostic distinguishes server-empty from filtered service and never
   assert.equal(mixed.cart_context_status,"selected_format_missing");
   assert.equal(JSON.stringify(mixed).includes(session.cookie),false);
 });
+
+test("delivery accepts successful GET despite extra unattributed lines in PUT response", async () => {
+  const delivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992332", observedInBrowser: true } };
+  const item = { goodId: "milk", offerId: "milk", qnty: 1, goodService: "dostavka" };
+  const formats = [{ service: "dostavka", storeCode: "992332", itemsCount: 1 }];
+  const putResponse = {
+    items: [item, { goodId: "unattributed", offerId: "unattributed", qnty: 1 }],
+    formats,
+  };
+  const readback = { items: [item], formats };
+  const calls = [], statuses = [];
+  const result = await applyMagnitCart({
+    session: delivery, storeCode: "992332", mode: "delivery", requestId: "delivery-put-extra-item",
+    operations: [{ action: "add", good_id: "milk", offer_id: "milk", quantity: 1 }],
+    operationStore: {
+      fingerprint: () => "fingerprint", inspect: async () => ({ replay: false }),
+      assertWritable: async () => {}, begin: async () => {}, finish: async ({ status }) => statuses.push(status),
+    },
+    requireEligible: async () => {},
+    fetchImpl: async (_url, init) => {
+      calls.push(init.method);
+      return response(calls.length === 1 ? { items: [], formats: [] } :
+        calls.length === 2 ? putResponse : readback);
+    },
+  });
+  assert.deepEqual(calls, ["GET", "PUT", "GET"]);
+  assert.deepEqual(statuses, ["complete"]);
+  assert.equal(result.mutation, "applied_and_verified");
+  assert.equal(result.items.length, 1);
+});
+
+test("delivery readback ignores only zero-quantity tombstones, never extra positive items", async () => {
+  const delivery = { cookie: session.cookie, context: { ...session.context, service: "dostavka", storeCode: "992332", observedInBrowser: true } };
+  const item = { goodId: "milk", offerId: "milk", qnty: 1, goodService: "dostavka" };
+  const ghost = { goodId: "old-item", offerId: "old-item", qnty: 0, goodService: "dostavka" };
+  const extra = { ...ghost, qnty: 1 };
+  for (const scenario of [
+    { name: "zero ghost", extra: ghost, expectedStatus: "complete" },
+    { name: "positive unexpected item", extra, expectedStatus: "ambiguous" },
+  ]) {
+    let n = 0;
+    const statuses = [];
+    const resultOrError = applyMagnitCart({
+      session: delivery, storeCode: "992332", mode: "delivery", requestId: "delivery-readback-" + scenario.name.replaceAll(" ", "-"),
+      operations: [{ action: "add", good_id: "milk", offer_id: "milk", quantity: 1 }],
+      operationStore: {
+        fingerprint: () => "fingerprint", inspect: async () => ({ replay: false }),
+        assertWritable: async () => {}, begin: async () => {}, finish: async ({ status }) => statuses.push(status),
+      },
+      requireEligible: async () => {},
+      fetchImpl: async () => {
+        n++;
+        if (n === 1) return response({ items: [], formats: [] });
+        if (n === 2) return response({ items: [item], formats: [{ service: "dostavka", storeCode: "992332", itemsCount: 1 }] });
+        return response({ items: [item, scenario.extra], formats: [{ service: "dostavka", storeCode: "992332", itemsCount: scenario.expectedStatus === "complete" ? 1 : 2 }] });
+      },
+    });
+    if (scenario.expectedStatus === "complete") {
+      const result = await resultOrError;
+      assert.equal(result.mutation, "applied_and_verified");
+    } else {
+      await assert.rejects(resultOrError, (error) => error.code === "ambiguous_result");
+    }
+    assert.equal(n, 3);
+    assert.deepEqual(statuses, [scenario.expectedStatus], scenario.name);
+  }
+});

@@ -389,33 +389,43 @@ export async function applyMagnitCart({ session, storeCode, mode, requestId, ope
     let after;
     try { after = await cartRequest(active, "PUT", { items: expectedItems }, fetchImpl, timeoutMs); }
     catch (cause) { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw cause; }
-    let result;
-    try { result = cartView(after, active.context); }
-    catch { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw new MagnitApiError("ambiguous_result", "Ответ не подтвердил контекст корзины. Перечитайте корзину перед следующим изменением."); }
+    // Magnit's successful delivery PUT may return extra unattributed cart lines
+    // (observed in the official Chrome HAR), even when formats.itemsCount refers
+    // only to the selected service. Treat this write response as advisory: only
+    // a fresh, independently verified GET can confirm a delivery mutation.
     const matchesExpected = (view) => {
       if (view.read_only) return false;
-      const actual = new Map(view.items.filter((item) => item.good_id && item.offer_id && item.quantity !== null)
-        .map((item) => [keyFor(item.good_id, item.offer_id), item.quantity]));
-      return actual.size === expectedItems.length && view.items.length === expectedItems.length &&
+      const reportedItems = view.items;
+      if (reportedItems.some((item) => !item.good_id || !item.offer_id ||
+        !Number.isSafeInteger(item.quantity) || item.quantity < 0)) return false;
+      const checkedItems = mode === "delivery"
+        ? reportedItems.filter((item) => item.quantity > 0)
+        : reportedItems;
+      // An ordinary delivery GET can retain zero-quantity tombstones. They are
+      // not active cart lines, but any unexpected positive line is a mismatch.
+      if (mode === "delivery" && view.selected_formats.length === 1 &&
+        view.selected_formats[0].items_count !== checkedItems.length) return false;
+      const actual = new Map(checkedItems.map((item) => [keyFor(item.good_id, item.offer_id), item.quantity]));
+      return actual.size === expectedItems.length && checkedItems.length === expectedItems.length &&
         expectedItems.every((item) => actual.get(keyFor(item.goodId, item.offerId)) === item.qnty) &&
-        (!formatStoreCode || view.items.length === 0 || view.cart_store_code === formatStoreCode);
+        (!formatStoreCode || checkedItems.length === 0 || view.cart_store_code === formatStoreCode);
     };
-    if (!matchesExpected(result)) {
-      await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" });
-      throw new MagnitApiError("ambiguous_result", "Магнит не подтвердил все позиции; перечитайте корзину перед следующим изменением.");
-    }
-    // Delivery mutations are based on the Express PUT shape, not a captured
-    // delivery PUT. Require an independent GET to confirm that the server
-    // persisted exactly the expected items before committing the receipt.
+    let result;
     if (mode === "delivery") {
       try {
-        const readback = cartView(await cartRequest(active, "GET", null, fetchImpl, timeoutMs), active.context);
-        if (!matchesExpected(readback))
+        result = cartView(await cartRequest(active, "GET", null, fetchImpl, timeoutMs), active.context);
+        if (!matchesExpected(result))
           throw new MagnitApiError("cart_readback_mismatch", "Повторное чтение не подтвердило товары.");
-        result = readback;
       } catch {
         await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" });
         throw new MagnitApiError("ambiguous_result", "После изменения доставки не удалось подтвердить её состав повторным чтением. Не повторяйте запрос; проверьте корзину в официальном Магните.");
+      }
+    } else {
+      try { result = cartView(after, active.context); }
+      catch { await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" }); throw new MagnitApiError("ambiguous_result", "Ответ не подтвердил контекст корзины. Перечитайте корзину перед следующим изменением."); }
+      if (!matchesExpected(result)) {
+        await operationStore.finish({ requestId, sessionFingerprint: fingerprint, status: "ambiguous" });
+        throw new MagnitApiError("ambiguous_result", "Магнит не подтвердил все позиции; перечитайте корзину перед следующим изменением.");
       }
     }
     const summary = { store_code: result.request_store_code, cart_store_code: result.cart_store_code, item_count: result.items.length, verified_actions: normalized.map((op) => ({ action: op.action, good_id: op.good_id, offer_id: op.offer_id, quantity: op.action === "remove" ? null : items.get(keyFor(op.good_id, op.offer_id))?.qnty ?? null })), mutation: "applied_and_verified", verified_at: new Date().toISOString() };
